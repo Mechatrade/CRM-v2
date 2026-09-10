@@ -437,7 +437,25 @@ td .lnk:hover{border-color:var(--accent);color:var(--accent)}
 .items .x:hover{color:var(--alert)}
 .totals{display:flex;flex-direction:column;gap:5px;align-items:flex-end;margin-top:12px;font-family:var(--mono);font-size:13px}
 .totals .row{display:flex;gap:26px;min-width:230px;justify-content:space-between}
+.totals .sub{border-top:1px solid var(--hair);padding-top:6px;margin-top:2px;font-weight:600}
 .totals .grand{font-size:17px;font-weight:600;border-top:1px solid var(--hair-2);padding-top:7px;margin-top:3px}
+
+/* ---------- Product Costing ---------- */
+/* Grey, un-typeable fields the sheet works out for itself. */
+.locked{background:var(--hair);border-color:transparent!important;color:var(--muted);
+  font-family:var(--mono);font-variant-numeric:tabular-nums;cursor:not-allowed}
+.locked:focus{box-shadow:none!important;border-color:transparent!important}
+.lockmark{font-size:9.5px;color:var(--faint);font-family:var(--mono);letter-spacing:.1em;text-transform:uppercase}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+.subhead{border-top:1px solid var(--hair);margin:16px 0 12px;padding-top:12px}
+.note{font-size:12px;color:var(--muted);margin:9px 0 0}
+/* Fields that only apply to an international (imported) purchase — toggled
+   by adding/removing "intl" on the form's own wrapper, never on <body>,
+   so it can't leak into anything else on the page. */
+.costing-form .intl-only{display:none}
+.costing-form.intl .intl-only{display:block}
+.costing-form.intl .field.intl-only{display:flex}
+.costing-form.intl td.intl-only,.costing-form.intl th.intl-only{display:table-cell}
 
 /* ---------- customer registry ---------- */
 .dupegroup{
@@ -1211,28 +1229,43 @@ const SCHEMAS = {
     ]
   },
   /* Costing sits between Canvass Summary and Quotation: a sheet built from
-     the canvassed cost, carried through an approval gate before it can turn
-     into a quotation. Selling price is always derived from cost + markup,
-     never typed in directly — see costingSellingPrice(). */
+     supplier pricing (possibly in a foreign currency), landed cost, and a
+     GP-based selling price, carried through an approval gate before it can
+     turn into a quotation. Creation/editing goes through a custom form
+     (openCostingForm) — see costingFigures() for the shared maths and
+     CUR_SYM for currency symbols. This schema drives the list table, search
+     and ref lookups from other records (e.g. quotations.costingId). */
   costing: {
     label:"Product costing", plural:"Product costing", icon:"⌬", titleField:"controlNo",
     fields:[
-      { k:"controlNo",    l:"Control No.",       type:"text",   table:true },
-      { k:"canvassId",    l:"From canvass",      type:"ref",    refTo:"canvass", table:true },
-      { k:"accountId",    l:"Customer",          type:"ref",    refTo:"accounts", table:true },
-      { k:"dealId",       l:"Opportunity",       type:"ref",    refTo:"deals" },
-      { k:"productName",  l:"Product / item",    type:"text",   req:true, table:true },
-      { k:"baseCost",     l:"Base cost",         type:"money",  table:true },
-      { k:"freight",      l:"Freight",           type:"money" },
-      { k:"duties",       l:"Duties / taxes",    type:"money" },
-      { k:"otherCost",    l:"Other cost",        type:"money" },
-      { k:"markupPct",    l:"Markup %",          type:"number", table:true },
-      { k:"sellingPrice", l:"Selling price",     type:"computed", table:true },
-      { k:"status",       l:"Status",            type:"select", opts:["Draft","Submitted for Approval","Approved","Rejected"], def:"Draft", table:true },
-      { k:"approvedBy",   l:"Approved by",       type:"ref",    refTo:"users" },
-      { k:"approvedAt",   l:"Approved on",       type:"date" },
-      { k:"ownerId",      l:"Owner",             type:"ref",    refTo:"users", table:true, assignOnly:true },
-      { k:"remarks",      l:"Remarks",           type:"textarea", full:true }
+      { k:"controlNo",     l:"Control No.",      type:"text",   table:true },
+      { k:"canvassId",     l:"From canvass",     type:"ref",    refTo:"canvass" },
+      { k:"accountId",     l:"Customer",         type:"ref",    refTo:"accounts", table:true },
+      { k:"dealId",        l:"Opportunity",      type:"ref",    refTo:"deals" },
+      { k:"supplierName",  l:"Supplier",         type:"text",   table:true },
+      { k:"supplierContact",l:"Contact person",  type:"text" },
+      { k:"supplierEmail", l:"Email or phone",   type:"text" },
+      { k:"supplierRef",   l:"Supplier quote ref.", type:"text" },
+      { k:"quoteValidUntil",l:"Quote valid until",type:"date" },
+      { k:"purchaseType",  l:"Purchase type",    type:"select", opts:["International","Local"], def:"International" },
+      { k:"supplierCurrency", l:"Supplier currency", type:"select", opts:["USD","CNY","EUR","JPY","SGD","KRW","TWD"], def:"USD" },
+      { k:"conversionRate",l:"Conversion rate to PHP", type:"number" },
+      { k:"itemsSummary",  l:"Items",            type:"text",   table:true },
+      { k:"telegraphicCharge", l:"Telegraphic charges", type:"money" },
+      { k:"shippingCost",  l:"Shipping cost",    type:"money" },
+      { k:"freightCost",   l:"Freight cost",     type:"money" },
+      { k:"deliveryFee",   l:"Delivery fee (₱)", type:"money" },
+      { k:"gpPct",         l:"GP %",             type:"number", table:true },
+      { k:"contingencyPct",l:"Contingency %",    type:"number" },
+      { k:"totalCost",     l:"Total cost (₱)",   type:"money",  table:true },
+      { k:"markupPct",     l:"Markup % (equiv.)",type:"number" },
+      { k:"sellingPrice",  l:"Selling price (₱)",type:"money" },
+      { k:"quotedPrice",   l:"Customer pays (₱)",type:"money",  table:true },
+      { k:"status",        l:"Status",            type:"select", opts:["Draft","Submitted for Approval","Approved","Rejected"], def:"Draft", table:true },
+      { k:"approvedBy",    l:"Approved by",       type:"ref",    refTo:"users" },
+      { k:"approvedAt",    l:"Approved on",       type:"date" },
+      { k:"ownerId",       l:"Owner",             type:"ref",    refTo:"users", table:true, assignOnly:true },
+      { k:"remarks",       l:"Remarks",           type:"textarea", full:true }
     ]
   },
   followups: {
@@ -1335,12 +1368,38 @@ function shortMoney(n){
   if (Math.abs(v) >= 1e3) return sym + (v/1e3).toFixed(0) + "K";
   return sym + v;
 }
-/* A costing sheet's selling price is always derived from cost + markup,
-   never typed in directly, so the sheet and any quotation made from it
-   can't drift apart. */
-function costingSellingPrice(d){
-  const cost = Number(d.baseCost||0) + Number(d.freight||0) + Number(d.duties||0) + Number(d.otherCost||0);
-  return cost * (1 + Number(d.markupPct||0)/100);
+/* ---- Product Costing: shared maths ----
+   Pure functions over a stored costing doc (or the live form's draft state)
+   so the same numbers show up whether it's being edited, viewed, or handed
+   off to a quotation. Mirrors the supplier-quote calculator: goods cost,
+   landed cost (+ telegraphic/shipping/freight, converted to PHP), total
+   cost (+ local delivery), then a GP-based selling price and contingency. */
+const CUR_SYM = { USD:"$", CNY:"¥", EUR:"€", JPY:"¥", SGD:"S$", KRW:"₩", TWD:"NT$", PHP:"₱" };
+function costingIsIntl(d){ return (d.purchaseType || "International") === "International"; }
+function costingCurrency(d){ return costingIsIntl(d) ? (d.supplierCurrency || "USD") : "PHP"; }
+function costingRate(d){ return costingIsIntl(d) ? (Number(d.conversionRate) || 1) : 1; }
+function costingFigures(d){
+  const items = Array.isArray(d.items) ? d.items : [];
+  const intl = costingIsIntl(d), rate = costingRate(d);
+  const goodsFx  = items.reduce((s,l)=> s + Number(l.qty||0)*Number(l.price||0), 0);
+  const goodsPhp = goodsFx * rate;
+  const teleFx    = intl ? Number(d.telegraphicCharge||0) : 0;
+  const shipFx    = Number(d.shippingCost||0);
+  const freightFx = intl ? Number(d.freightCost||0) : 0;
+  const tele    = teleFx * rate;
+  const ship    = shipFx * rate;
+  const freight = freightFx * rate;
+  const deliv   = intl ? Number(d.deliveryFee||0) : 0;      // billed locally, already in pesos
+  const landedFx = goodsFx + teleFx + shipFx + freightFx;
+  const landed   = goodsPhp + tele + ship + freight;
+  const cost = landed + deliv;
+  const gp = Math.min(99, Number(d.gpPct||0));
+  const sell = gp < 100 ? cost / (1 - gp/100) : cost;
+  const markup = cost ? ((sell - cost)/cost)*100 : 0;
+  const contingency = sell * (Number(d.contingencyPct||0)/100);
+  const quoted = sell + contingency;
+  return { items, intl, rate, goodsFx, goodsPhp, teleFx, shipFx, freightFx, tele, ship, freight, deliv,
+           landedFx, landed, cost, gp, sell, markup, contingency, quoted, profit: sell - cost };
 }
 function fmtDate(d){
   if(!d) return "—";
@@ -1988,8 +2047,6 @@ function cell(col,f,d){
   if (f.type === "computed"){
     if (f.k === "expectedRevenue")
       return `<span class="mono">${money(Number(d.value||0) * stageProb(d.stage)/100)}</span>`;
-    if (f.k === "sellingPrice")
-      return `<span class="mono">${money(costingSellingPrice(d))}</span>`;
     return "—";
   }
   if (f.type === "links") return renderLinks(v);
@@ -4272,6 +4329,7 @@ function dynamicOptions(type, sel){
 /* ---- create / edit record ---- */
 function openForm(col, id, preset){
   if (col === "quotations") return openQuoteForm(id, preset);
+  if (col === "costing") return openCostingForm(id, preset);
   const S = SCHEMAS[col]; if(!S) return;
   if (id){
     const existing = state.data[col].get(id);
@@ -4447,7 +4505,8 @@ function proceedRecord(col, id){
     openForm("costing", null, {
       controlNo: d.controlNo || null, canvassId: id,
       accountId: d.accountId || null, dealId: d.dealId || null,
-      productName: d.productName || "", baseCost: d.unitCost || null,
+      supplierName: d.supplierName || "", supplierContact: d.supplierContact || "",
+      items: [{ desc: d.productName || "", qty:1, price: d.unitCost || "" }],
       ownerId: d.ownerId
     });
   } else if (col === "costing"){
@@ -4455,18 +4514,21 @@ function proceedRecord(col, id){
       toast("Approve this costing sheet first — then Proceed creates the quotation.", true);
       return;
     }
+    const f = costingFigures(d);
+    const desc = (d.items && d.items[0] && d.items[0].desc) || d.supplierName || "Costed item";
     openQuoteForm(null, {
       controlNo: d.controlNo || null, costingId: id,
       accountId: d.accountId || null, dealId: d.dealId || null,
-      title: d.productName ? `Quotation for ${d.productName}` : "",
+      title: `Quotation for ${desc}`,
       ownerId: d.ownerId,
-      items: [{ desc: d.productName || "", qty:1, price: costingSellingPrice(d) }]
+      items: [{ desc, qty:1, price: Math.round(f.quoted*100)/100 }]
     });
   }
 }
 
 function openDetail(col,id){
   if (col === "quotations") return openQuoteDetail(id);
+  if (col === "costing") return openCostingDetail(id);
   const S = SCHEMAS[col], d = state.data[col].get(id);
   if(!d) return;
   const related = rows("activities").filter(a=>a.relatedId===id)
@@ -4509,7 +4571,6 @@ function openDetail(col,id){
       ${col==="leads" && d.status!=="Converted" ? `<button class="btn" id="conv">Convert to deal</button>`:""}
       ${col==="inquiries" && canWrite(d) ? `<button class="btn" id="to-canvass">Create Canvass Summary</button>`:""}
       ${col==="canvass" && canWrite(d) ? `<button class="btn" id="to-costing">Create Product Costing</button>`:""}
-      ${col==="costing" && d.status==="Approved" && canWrite(d) ? `<button class="btn" id="to-quote">Create Quotation</button>`:""}
       <div class="spacer"></div>
       ${canWrite(d) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
       <button class="btn" data-close>Close</button>
@@ -4532,7 +4593,7 @@ function openDetail(col,id){
   // The Sales & Quotation Management pipeline: each stage hands its control
   // number and identifying details forward to the next, so a quotation can
   // always be traced back to the inquiry it started from.
-  ["#to-canvass","#to-costing","#to-quote"].forEach(sel=>{
+  ["#to-canvass","#to-costing"].forEach(sel=>{
     const btn = document.querySelector(sel);
     if (btn) btn.onclick = ()=>{ closeModal(true); proceedRecord(col, id); };
   });
@@ -4897,6 +4958,351 @@ function itemRow(i, it={}){
     <td style="width:26px;padding-top:8px"><button class="x" data-del-row="${i}" title="Remove">×</button></td>
   </tr>`;
 }
+/* ---- Product Costing: supplier quote in, selling price out ----
+   A custom form (not the generic schema-driven one) because it needs live
+   recalculation, multi-currency item lines, and fields that show or hide
+   depending on whether the purchase is international. See costingFigures()
+   for the maths this mirrors. */
+function openCostingForm(id, preset){
+  if (id){
+    const existing = state.data.costing.get(id);
+    if (existing && !canWrite(existing)) return toast(readOnlyNote(existing), true);
+  }
+  const d = id ? { ...state.data.costing.get(id) } : { ...(preset || {}) };
+  let items = Array.isArray(d.items) && d.items.length ? d.items.map(i=>({...i})) : [{desc:"",qty:1,price:""}];
+  let nextLineId = 1;
+  items = items.map(i=>({ ...i, _id: nextLineId++ }));
+  const accts = rows("accounts").sort((a,b)=>(a.name||"").localeCompare(b.name||""));
+  const dls   = rows("deals").sort((a,b)=>(a.title||"").localeCompare(b.title||""));
+  const csPeso = n => "₱" + Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const csFx   = (n,sym) => (sym||"₱") + Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+
+  modal(`
+    <div class="modal-h"><h3>${id?"Edit product costing":"New product costing"}</h3>
+      <button class="x" data-close aria-label="Close">×</button></div>
+    <div class="modal-b costing-form" id="co-wrap">
+      <div id="form-err" class="err hidden"></div>
+      <div class="fgrid">
+        ${d.controlNo ? `<div class="field"><label>Control No.</label>
+          <input value="${esc(d.controlNo)}" readonly>
+          <span class="hint">Traces back to the Canvass Summary and original Inquiry.</span></div>` : ""}
+        <div class="field"><label for="co-acct">Customer</label>
+          <select id="co-acct"><option value="">—</option>
+            ${accts.map(a=>`<option value="${a.id}"${a.id===d.accountId?" selected":""}>${esc(a.name)}</option>`).join("")}</select></div>
+        <div class="field"><label for="co-deal">Opportunity</label>
+          <select id="co-deal"><option value="">— None —</option>
+            ${dls.map(x=>`<option value="${x.id}"${x.id===d.dealId?" selected":""}>${esc(x.title)}</option>`).join("")}</select></div>
+        <div class="field"><label for="co-owner">Owner</label>
+          <select id="co-owner"${isManager()?"":" disabled"}>
+            ${isManager()?ownerOptions(d.ownerId||myUid()):`<option value="${myUid()}">${esc(state.profile.displayName||"You")}</option>`}</select></div>
+      </div>
+
+      <div class="eyebrow" style="margin:20px 0 2px">Supplier</div>
+      <div class="fgrid">
+        <div class="field"><label for="co-supplier">Supplier name <span class="req">*</span></label>
+          <input id="co-supplier" value="${esc(d.supplierName||"")}"></div>
+        <div class="field"><label for="co-contact">Contact person</label>
+          <input id="co-contact" value="${esc(d.supplierContact||"")}"></div>
+        <div class="field"><label for="co-email">Email or phone</label>
+          <input id="co-email" value="${esc(d.supplierEmail||"")}"></div>
+        <div class="field"><label for="co-ref">Supplier quote ref.</label>
+          <input id="co-ref" value="${esc(d.supplierRef||"")}"></div>
+        <div class="field"><label for="co-valid">Quote valid until</label>
+          <input id="co-valid" type="date" value="${esc(d.quoteValidUntil||"")}"></div>
+        <div class="field"><label for="co-type">Purchase type</label>
+          <select id="co-type">
+            <option value="International"${(d.purchaseType||"International")==="International"?" selected":""}>International — imported</option>
+            <option value="Local"${d.purchaseType==="Local"?" selected":""}>Local — bought here</option>
+          </select></div>
+      </div>
+      <div class="fgrid intl-only" style="margin-top:13px">
+        <div class="field intl-only"><label for="co-cur">Supplier currency</label>
+          <select id="co-cur">
+            ${["USD","CNY","EUR","JPY","SGD","KRW","TWD"].map(c=>opt(c, d.supplierCurrency||"USD")).join("")}
+          </select></div>
+        <div class="field intl-only"><label for="co-rate">Conversion rate to PHP</label>
+          <input id="co-rate" type="number" min="0" step="any" value="${esc(d.conversionRate??"")}">
+          <span class="hint" id="co-rate-hint"></span></div>
+      </div>
+
+      <div class="eyebrow" style="margin:20px 0 2px">Supplier quoted price
+        <span style="text-transform:none;letter-spacing:0;color:var(--faint);font-family:var(--sans);font-size:11px"></span></div>
+      <table class="items">
+        <thead><tr>
+          <th>Item</th><th>Qty</th><th id="co-th-unit">Unit price</th>
+          <th style="text-align:right" id="co-th-fx">Amount</th>
+          <th style="text-align:right" class="intl-only" id="co-th-php">Amount (₱)</th><th></th>
+        </tr></thead>
+        <tbody id="co-items">${items.map(i=>coItemRow(i)).join("")}</tbody>
+      </table>
+      <button class="btn sm" id="co-add" style="margin-top:8px">+ Add item</button>
+
+      <div class="eyebrow" style="margin:20px 0 2px">Costs on top</div>
+      <div class="fgrid">
+        <div class="field intl-only"><label for="co-tele">Telegraphic charges</label>
+          <input id="co-tele" type="number" min="0" step="any" value="${esc(d.telegraphicCharge??"")}">
+          <span class="hint" id="co-conv-tele"></span></div>
+        <div class="field"><label for="co-ship">Shipping cost</label>
+          <input id="co-ship" type="number" min="0" step="any" value="${esc(d.shippingCost??"")}">
+          <span class="hint" id="co-conv-ship"></span></div>
+        <div class="field intl-only"><label for="co-freight">Freight cost</label>
+          <input id="co-freight" type="number" min="0" step="any" value="${esc(d.freightCost??"")}">
+          <span class="hint" id="co-conv-freight"></span></div>
+      </div>
+      <div class="subhead intl-only"><span class="eyebrow">billed here — entered in pesos</span></div>
+      <div class="fgrid intl-only">
+        <div class="field intl-only"><label for="co-deliv">Delivery fee</label>
+          <input id="co-deliv" type="number" min="0" step="any" value="${esc(d.deliveryFee??"")}">
+          <span class="hint">Port to your warehouse. No conversion applies.</span></div>
+      </div>
+
+      <div class="eyebrow" style="margin:20px 0 2px">Mark-up and selling price</div>
+      <div class="split">
+        <div>
+          <div class="fgrid">
+            <div class="field"><label for="co-gp">GP %</label>
+              <input id="co-gp" type="number" min="0" max="99" step="any" value="${esc(d.gpPct??30)}"></div>
+            <div class="field"><label>Mark-up % <span class="lockmark">auto</span></label>
+              <input id="co-markup" class="locked" readonly></div>
+          </div>
+          <div class="fgrid" style="margin-top:13px">
+            <div class="field"><label for="co-cont">Contingency %</label>
+              <input id="co-cont" type="number" min="0" step="any" value="${esc(d.contingencyPct??0)}"></div>
+            <div class="field"><label>Selling price <span class="lockmark">auto</span></label>
+              <input id="co-sell" class="locked" readonly></div>
+          </div>
+          <p class="note">Type the <strong>GP %</strong> you need — the share of the selling price you
+            keep. Mark-up is the same profit expressed against cost, worked out for you.</p>
+        </div>
+        <div>
+          <div class="eyebrow" style="margin-bottom:9px">Cost breakdown</div>
+          <div class="totals" id="co-totals"></div>
+        </div>
+      </div>
+
+      <div class="field full" style="margin-top:16px"><label for="co-remarks">Remarks</label>
+        <textarea id="co-remarks">${esc(d.remarks||"")}</textarea></div>
+    </div>
+    <div class="modal-f">
+      ${id?`<button class="btn dgr" id="co-del">Delete</button>`:""}
+      <div class="spacer"></div>
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn pri" id="co-save">${id?"Save costing sheet":"Create costing sheet"}</button>
+    </div>`, true);
+
+  function isIntl(){ return $("#co-type").value === "International"; }
+  function curOf(){ return isIntl() ? $("#co-cur").value : "PHP"; }
+  function rateOf(){ return isIntl() ? (Number($("#co-rate").value)||1) : 1; }
+  function applyIntl(){
+    $("#co-wrap").classList.toggle("intl", isIntl());
+  }
+  function collectItems(){
+    return Array.from(document.querySelectorAll("#co-items tr[data-id]")).map(tr=>({
+      desc:  tr.querySelector('[data-f="desc"]').value,
+      qty:   Number(tr.querySelector('[data-f="qty"]').value||0),
+      price: Number(tr.querySelector('[data-f="price"]').value||0)
+    }));
+  }
+  function draftDoc(){
+    return {
+      purchaseType: $("#co-type").value, supplierCurrency: $("#co-cur").value,
+      conversionRate: Number($("#co-rate").value||0), items: collectItems(),
+      telegraphicCharge: Number($("#co-tele").value||0), shippingCost: Number($("#co-ship").value||0),
+      freightCost: Number($("#co-freight").value||0), deliveryFee: Number($("#co-deliv").value||0),
+      gpPct: Number($("#co-gp").value||0), contingencyPct: Number($("#co-cont").value||0)
+    };
+  }
+  function drawItems(){
+    const body = $("#co-items");
+    body.innerHTML = items.map(i=>coItemRow(i)).join("");
+    body.querySelectorAll("tr[data-id]").forEach(tr=>{
+      const line = items.find(x=>x._id === Number(tr.dataset.id));
+      tr.querySelectorAll("[data-f]").forEach(inp=>
+        inp.addEventListener("input", ()=>{
+          line[inp.dataset.f] = inp.type==="number" ? Number(inp.value||0) : inp.value;
+          recalc();
+        }));
+    });
+    body.querySelectorAll("[data-del-line]").forEach(b=> b.onclick = ()=>{
+      if (items.length <= 1) return;
+      items = items.filter(x=>x._id !== Number(b.dataset.delLine));
+      drawItems(); recalc();
+    });
+  }
+  function recalc(){
+    applyIntl();
+    const f = costingFigures(draftDoc());
+    const sym = CUR_SYM[curOf()] || (curOf()+" ");
+    $("#co-th-unit").textContent = `Unit price (${curOf()})`;
+    $("#co-th-fx").textContent   = `Amount (${curOf()})`;
+    $("#co-rate-hint").textContent = `1 ${curOf()} = ₱${(Number($("#co-rate").value)||0).toLocaleString()}. Update to today's rate.`;
+    document.querySelectorAll("#co-items tr[data-id]").forEach(tr=>{
+      const line = items.find(x=>x._id === Number(tr.dataset.id));
+      const fxOut = tr.querySelector('[data-out="fx"]'), phpOut = tr.querySelector('[data-out="php"]');
+      if (fxOut)  fxOut.textContent  = csFx(Number(line.qty||0)*Number(line.price||0), sym);
+      if (phpOut) phpOut.textContent = csPeso(Number(line.qty||0)*Number(line.price||0)*rateOf());
+    });
+    const conv = (id, phpVal, hint) => {
+      const box = $(id); if (!box) return;
+      box.textContent = isIntl() ? `= ${csPeso(phpVal)}${hint?" · "+hint:""}` : "";
+    };
+    conv("#co-conv-ship", f.ship, "Warehouse to shipping port or forwarder.");
+    conv("#co-conv-freight", f.freight, "Supplier's country to the Philippines.");
+    conv("#co-conv-tele", f.tele, "Bank and telegraphic transfer fees.");
+    $("#co-markup").value = f.markup.toFixed(2);
+    $("#co-sell").value   = csPeso(f.sell);
+    const both = (fxv,phpv) => isIntl() ? `${csFx(fxv,sym)} · ${csPeso(phpv)}` : csPeso(phpv);
+    $("#co-totals").innerHTML = `
+      <div class="row"><span>Purchase cost</span><span>${both(f.goodsFx, f.goodsPhp)}</span></div>
+      ${isIntl()?`<div class="row"><span>Telegraphic charges</span><span>${both(f.teleFx, f.tele)}</span></div>`:""}
+      <div class="row"><span>Shipping fee</span><span>${both(f.shipFx, f.ship)}</span></div>
+      ${isIntl()?`<div class="row"><span>Freight charges</span><span>${both(f.freightFx, f.freight)}</span></div>`:""}
+      <div class="row sub"><span>Landed cost</span><span>${both(f.landedFx, f.landed)}</span></div>
+      ${isIntl()?`<div class="row"><span>Delivery fee</span><span>${csPeso(f.deliv)}</span></div>`:""}
+      <div class="row grand"><span>Total cost</span><span>${csPeso(f.cost)}</span></div>
+      <div class="row" style="margin-top:9px"><span>Selling price</span>
+        <span style="color:var(--accent);font-weight:600">${csPeso(f.sell)}</span></div>
+      <div class="row"><span>Contingency ${Number($("#co-cont").value||0)}%</span><span>${csPeso(f.contingency)}</span></div>
+      <div class="row grand"><span>Customer pays</span><span>${csPeso(f.quoted)}</span></div>`;
+  }
+
+  $("#co-add").onclick = ()=>{ items.push({ _id: nextLineId++, desc:"", qty:1, price:"" }); drawItems(); recalc(); };
+  ["co-type","co-cur","co-rate","co-tele","co-ship","co-freight","co-deliv","co-gp","co-cont"].forEach(fid=>{
+    $("#"+fid).addEventListener("input", recalc);
+    $("#"+fid).addEventListener("change", recalc);
+  });
+  drawItems(); recalc();
+
+  const del = document.querySelector("#co-del");
+  if (del) del.onclick = async ()=>{ if (await deleteRecord("costing", id)) closeModal(true); };
+
+  $("#co-save").onclick = async ()=>{
+    const box = $("#form-err");
+    const supplierName = $("#co-supplier").value.trim();
+    const items2 = collectItems().filter(i=>i.desc || i.price);
+    if (!supplierName){ box.textContent = "Supplier name is required."; box.classList.remove("hidden"); return; }
+    if (!items2.length){ box.textContent = "Add at least one item."; box.classList.remove("hidden"); return; }
+    const f = costingFigures({ ...draftDoc(), items: items2 });
+    const ownerId = isManager() ? ($("#co-owner").value || myUid()) : (d.ownerId || myUid());
+    const owner = state.users.get(ownerId);
+    const payload = {
+      controlNo: d.controlNo || null, canvassId: d.canvassId || null,
+      accountId: $("#co-acct").value || null, dealId: $("#co-deal").value || null,
+      accountManagerId: state.data.accounts.get($("#co-acct").value)?.accountManagerId || null,
+      ownerId, department: owner?.department || state.profile.department,
+      supplierName, supplierContact: $("#co-contact").value.trim()||null,
+      supplierEmail: $("#co-email").value.trim()||null, supplierRef: $("#co-ref").value.trim()||null,
+      quoteValidUntil: $("#co-valid").value||null,
+      purchaseType: $("#co-type").value, supplierCurrency: $("#co-cur").value,
+      conversionRate: Number($("#co-rate").value||0)||null,
+      items: items2,
+      itemsSummary: items2[0].desc + (items2.length>1?` +${items2.length-1} more`:""),
+      telegraphicCharge: Number($("#co-tele").value||0)||null, shippingCost: Number($("#co-ship").value||0)||null,
+      freightCost: Number($("#co-freight").value||0)||null, deliveryFee: Number($("#co-deliv").value||0)||null,
+      gpPct: Number($("#co-gp").value||0), contingencyPct: Number($("#co-cont").value||0)||null,
+      totalCost: f.cost, markupPct: f.markup, sellingPrice: f.sell, quotedPrice: f.quoted,
+      remarks: $("#co-remarks").value||null,
+      updatedAt: serverTimestamp()
+    };
+    if (!id) payload.status = "Draft";
+    $("#co-save").disabled = true;
+    try{
+      if (id) await tracked(updateDoc(doc(db,"costing",id), payload));
+      else{
+        payload.createdAt = serverTimestamp(); payload.createdBy = myUid();
+        await tracked(addDoc(collection(db,"costing"), payload));
+      }
+      closeModal(true); toast("Costing sheet " + (id?"saved":"created"));
+    }catch(e){
+      $("#co-save").disabled = false;
+      box.textContent = e.message; box.classList.remove("hidden");
+    }
+  };
+}
+function coItemRow(l){
+  return `<tr data-id="${l._id}">
+    <td><input data-f="desc" value="${esc(l.desc||"")}" placeholder="What the supplier quoted"></td>
+    <td style="width:70px"><input data-f="qty" type="number" min="0" step="any" value="${esc(l.qty??1)}"></td>
+    <td style="width:112px"><input data-f="price" type="number" min="0" step="any" value="${esc(l.price??"")}" placeholder="0.00"></td>
+    <td style="width:112px;text-align:right;font-family:var(--mono);font-size:12.5px" data-out="fx"></td>
+    <td class="intl-only" style="width:120px;text-align:right;font-family:var(--mono);font-size:12.5px" data-out="php"></td>
+    <td style="width:26px"><button class="x" data-del-line="${l._id}" title="Remove">×</button></td>
+  </tr>`;
+}
+
+/* Read-only view of a saved costing sheet: the same breakdown as the form,
+   plus approval status and — once Approved — the handoff into a quotation. */
+function openCostingDetail(id){
+  const d = state.data.costing.get(id); if(!d) return;
+  const f = costingFigures(d);
+  const sym = CUR_SYM[costingCurrency(d)] || (costingCurrency(d)+" ");
+  const csPeso = n => "₱" + Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const csFx   = n => sym + Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const both = (fxv,phpv) => f.intl ? `${csFx(fxv)} · ${csPeso(phpv)}` : csPeso(phpv);
+  const healthy = f.gp >= 20, thin = f.gp >= 10;
+  modal(`
+    <div class="modal-h">
+      <div><div class="eyebrow">Product costing</div><h3>${esc(d.controlNo || d.supplierName || "Costing sheet")}</h3></div>
+      <button class="x" data-close aria-label="Close">×</button></div>
+    <div class="modal-b">
+      <div class="det">
+        ${d.controlNo ? `<div class="r"><div class="k">Control No.</div><div class="v mono" style="font-size:13px">${esc(d.controlNo)}</div></div>` : ""}
+        <div class="r"><div class="k">Customer</div><div class="v">${esc(recordTitle("accounts",d.accountId))}</div></div>
+        <div class="r"><div class="k">Status</div><div class="v">${pillFor("status",d.status)}</div></div>
+        <div class="r"><div class="k">Supplier</div><div class="v">${esc(d.supplierName||"—")}</div></div>
+        <div class="r"><div class="k">Contact person</div><div class="v">${esc(d.supplierContact||"—")}</div></div>
+        <div class="r"><div class="k">Purchase type</div><div class="v">${esc(d.purchaseType||"International")}${f.intl?` (${esc(costingCurrency(d))} @ ₱${costingRate(d)})`:""}</div></div>
+        <div class="r"><div class="k">Owner</div><div class="v">${esc(userName(d.ownerId))}</div></div>
+        ${d.status==="Approved" ? `<div class="r"><div class="k">Approved by</div><div class="v">${esc(userName(d.approvedBy))} · ${fmtDate(d.approvedAt)}</div></div>` : ""}
+      </div>
+
+      <table class="items" style="margin-top:18px">
+        <thead><tr><th>Item</th><th style="text-align:right">Qty</th>
+          <th style="text-align:right">Unit price</th><th style="text-align:right">Amount</th></tr></thead>
+        <tbody>${(d.items||[]).map(i=>`<tr>
+          <td style="padding:7px 6px">${esc(i.desc||"—")}</td>
+          <td class="num" style="padding:7px 6px">${i.qty}</td>
+          <td class="num" style="padding:7px 6px">${csFx(i.price)}</td>
+          <td class="num" style="padding:7px 6px">${csFx(Number(i.qty||0)*Number(i.price||0))}</td>
+        </tr>`).join("")}</tbody>
+      </table>
+
+      <div class="totals" style="margin-top:14px">
+        <div class="row"><span>Purchase cost</span><span>${both(f.goodsFx, f.goodsPhp)}</span></div>
+        ${f.intl?`<div class="row"><span>Telegraphic charges</span><span>${both(f.teleFx, f.tele)}</span></div>`:""}
+        <div class="row"><span>Shipping fee</span><span>${both(f.shipFx, f.ship)}</span></div>
+        ${f.intl?`<div class="row"><span>Freight charges</span><span>${both(f.freightFx, f.freight)}</span></div>`:""}
+        <div class="row sub"><span>Landed cost</span><span>${both(f.landedFx, f.landed)}</span></div>
+        ${f.intl?`<div class="row"><span>Delivery fee</span><span>${csPeso(f.deliv)}</span></div>`:""}
+        <div class="row grand"><span>Total cost</span><span>${csPeso(f.cost)}</span></div>
+        <div class="row" style="margin-top:9px"><span>Selling price</span>
+          <span style="color:var(--accent);font-weight:600">${csPeso(f.sell)}</span></div>
+        <div class="row"><span>Contingency ${d.contingencyPct||0}%</span><span>${csPeso(f.contingency)}</span></div>
+        <div class="row grand"><span>Customer pays</span><span>${csPeso(f.quoted)}</span></div>
+      </div>
+
+      <div class="kpis" style="margin-top:16px">
+        <div class="kpi"><div class="lbl">Total cost</div><div class="val">${csPeso(f.cost)}</div></div>
+        <div class="kpi ${healthy?"accent":thin?"warn":"bad"}"><div class="lbl">GP</div>
+          <div class="val">${f.gp.toFixed(1)}%</div><div class="foot">same as a ${f.markup.toFixed(1)}% mark-up</div></div>
+        <div class="kpi ${f.profit>0?"":"bad"}"><div class="lbl">Gross profit</div><div class="val">${csPeso(f.profit)}</div></div>
+      </div>
+      ${d.remarks ? `<div style="margin-top:16px"><div class="eyebrow">Remarks</div>
+        <p style="font-size:13px;white-space:pre-wrap;margin:5px 0 0">${esc(d.remarks)}</p></div>` : ""}
+    </div>
+    <div class="modal-f">
+      ${d.status==="Approved" && canWrite(d) ? `<button class="btn" id="co-to-quote">Create Quotation</button>` : ""}
+      <div class="spacer"></div>
+      ${canWrite(d) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
+      <button class="btn" data-close>Close</button>
+      ${canWrite(d) ? `<button class="btn pri" id="co-edit">Edit</button>` : ""}
+    </div>`, true);
+  const em = document.querySelector("#co-edit");
+  if (em) em.onclick = ()=>{ closeModal(true); openCostingForm(id); };
+  const tq = document.querySelector("#co-to-quote");
+  if (tq) tq.onclick = ()=>{ closeModal(true); proceedRecord("costing", id); };
+}
+
 function openQuoteForm(id, preset){
   if (id){
     const existing = state.data.quotations.get(id);
