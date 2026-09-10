@@ -1212,25 +1212,29 @@ const SCHEMAS = {
       { k:"notes",          l:"Notes",            type:"textarea", full:true }
     ]
   },
+  /* Canvass Summary is a comparison sheet: one set of items, priced by up
+     to three suppliers side by side, matching the printed Canvass Sheet
+     template (Doc. Control No., item table, three supplier columns,
+     Canvassed/Noted/Approved by). Creation/editing goes through a custom
+     form (openCanvassForm) — see canvassTotals() for the per-supplier math.
+     This schema drives the list table, search and ref lookups (e.g.
+     costing.canvassId). */
   canvass: {
-    label:"Canvass", plural:"Canvass summary", icon:"⌗", titleField:"refNo",
+    label:"Canvass", plural:"Canvass summary", icon:"⌗", titleField:"controlNo",
     fields:[
-      { k:"refNo",          l:"Reference",        type:"text",   req:true, table:true },
-      { k:"controlNo",      l:"Control No.",      type:"text",   table:true, system:true },
-      { k:"inquiryId",      l:"From inquiry",     type:"ref",    refTo:"inquiries" },
-      { k:"accountId",      l:"Customer",         type:"ref",    refTo:"accounts", table:true },
-      { k:"dealId",         l:"Opportunity",      type:"ref",    refTo:"deals" },
-      { k:"productName",    l:"Product / item",   type:"text",   req:true, table:true },
-      { k:"specification",  l:"Specification",    type:"textarea" },
-      { k:"supplierName",   l:"Supplier canvassed", type:"text", req:true, table:true },
-      { k:"supplierContact",l:"Supplier contact",  type:"text" },
-      { k:"unitCost",       l:"Canvassed cost",    type:"money",  table:true },
-      { k:"moq",            l:"MOQ",               type:"text" },
-      { k:"leadTime",       l:"Lead time",         type:"text" },
-      { k:"canvassDate",    l:"Canvass date",      type:"date",   table:true },
-      { k:"status",         l:"Status",            type:"select", opts:["Draft","Reviewed","Selected","Rejected"], def:"Draft", table:true },
-      { k:"ownerId",        l:"Owner",             type:"ref",    refTo:"users", table:true, assignOnly:true },
-      { k:"remarks",        l:"Remarks",           type:"textarea", full:true }
+      { k:"controlNo",         l:"Control No.",       type:"text",   table:true, system:true },
+      { k:"canvassDate",       l:"Date",              type:"date",   table:true },
+      { k:"inquiryId",         l:"From inquiry",      type:"ref",    refTo:"inquiries" },
+      { k:"accountId",         l:"Customer",          type:"ref",    refTo:"accounts", table:true },
+      { k:"dealId",            l:"Opportunity",       type:"ref",    refTo:"deals" },
+      { k:"itemsSummary",      l:"Items",             type:"text",   table:true },
+      { k:"supplierSummary",   l:"Suppliers canvassed", type:"text", table:true },
+      { k:"selectedSupplierName", l:"Selected",       type:"text",   table:true },
+      { k:"status",            l:"Status",            type:"select", opts:["Draft","Reviewed","Selected","Rejected"], def:"Draft", table:true },
+      { k:"ownerId",           l:"Canvassed by",      type:"ref",    refTo:"users", table:true, assignOnly:true },
+      { k:"notedBy",           l:"Noted by",          type:"ref",    refTo:"users" },
+      { k:"approvedBy",        l:"Approved by",       type:"ref",    refTo:"users" },
+      { k:"remarks",           l:"Remarks",           type:"textarea", full:true }
     ]
   },
   /* Costing sits between Canvass Summary and Quotation: a sheet built from
@@ -3854,21 +3858,25 @@ function productPerformanceTab(){
   const canvass = rows("canvass"), products = rows("products");
   const byProduct = new Map();
   canvass.forEach(c=>{
-    if (!c.productName) return;
-    const k = c.productName.trim();
-    const o = byProduct.get(k) || { n:0, suppliers:new Set(), lastCost:null, lastDate:null };
-    o.n++; if (c.supplierName) o.suppliers.add(c.supplierName.trim());
-    if (!o.lastDate || (toDate(c.canvassDate)||0) > o.lastDate){ o.lastDate = toDate(c.canvassDate)||o.lastDate; o.lastCost = c.unitCost; }
-    byProduct.set(k,o);
+    (c.items||[]).forEach(it=>{
+      const k = (it.desc||"").trim(); if (!k) return;
+      const o = byProduct.get(k) || { n:0, suppliers:new Set(), lastCost:null, lastDate:null };
+      o.n++;
+      const costs = (it.costs||[]).map(Number).filter(n=>n>0);
+      (c.suppliers||[]).forEach((s,i)=>{ if (s?.name && Number((it.costs||[])[i]||0)>0) o.suppliers.add(s.name.trim()); });
+      const d = toDate(c.canvassDate);
+      if (costs.length && (!o.lastDate || (d||0) > o.lastDate)){ o.lastDate = d||o.lastDate; o.lastCost = Math.min(...costs); }
+      byProduct.set(k,o);
+    });
   });
   const list = Array.from(byProduct.entries()).map(([name,o])=>({name,...o})).sort((a,b)=>b.n-a.n);
   return `
   <div class="kpis">
     <div class="kpi"><div class="lbl">Products tracked</div><div class="val">${products.length}</div></div>
-    <div class="kpi"><div class="lbl">Canvass entries</div><div class="val">${canvass.length}</div></div>
+    <div class="kpi"><div class="lbl">Canvass sheets</div><div class="val">${canvass.length}</div></div>
   </div>
   <div class="card" style="margin-top:14px">
-    <div class="card-h"><h3>Most canvassed products</h3><div class="spacer"></div><span class="eyebrow">suppliers · latest cost</span></div>
+    <div class="card-h"><h3>Most canvassed products</h3><div class="spacer"></div><span class="eyebrow">suppliers · lowest cost seen</span></div>
     <div class="tbl-wrap"><table>
       <thead><tr><th>Product</th><th style="text-align:right">Times canvassed</th><th style="text-align:right">Suppliers</th>
         <th style="text-align:right">Latest cost</th><th>As of</th></tr></thead>
@@ -4407,6 +4415,7 @@ function dynamicOptions(type, sel){
 function openForm(col, id, preset){
   if (col === "quotations") return openQuoteForm(id, preset);
   if (col === "costing") return openCostingForm(id, preset);
+  if (col === "canvass") return openCanvassForm(id, preset);
   const S = SCHEMAS[col]; if(!S) return;
   if (id){
     const existing = state.data[col].get(id);
@@ -4546,7 +4555,6 @@ async function submitForm(col,id){
   try{
     if (id) await tracked(updateDoc(doc(db,col,id), payload));
     else    await tracked(addDoc(collection(db,col), payload));
-    if (col === "canvass") await upsertCanvassCatalog(vals);
     closeModal(true); toast(S.label + (id?" saved":" created"));
   }catch(e){
     $("#save").disabled = false;
@@ -4554,29 +4562,38 @@ async function submitForm(col,id){
   }
 }
 
-/* Every Canvass Summary entry keeps Products and Suppliers current — a new
-   product or supplier name gets a fresh catalog record, one already on file
-   just has its latest cost/contact refreshed. Matched by name, case-insensitive. */
-async function upsertCanvassCatalog(vals){
-  const findByName = (col,name)=> rows(col).find(r=>(r.name||"").trim().toLowerCase() === name.trim().toLowerCase());
+/* Every Canvass Summary sheet keeps Products and Suppliers current — a new
+   supplier name gets a fresh catalog record (refreshed if it's already on
+   file), and each item's lowest quoted cost this round is recorded against
+   it. Matched by name, case-insensitive. Called from openCanvassForm's save. */
+async function upsertCanvassCatalog(items, suppliers, canvassDate){
+  const findByName = (col,name)=> rows(col).find(r=>(r.name||"").trim().toLowerCase() === String(name).trim().toLowerCase());
+  const date = canvassDate || todayISO();
   try{
-    if (vals.productName){
-      const existing = findByName("products", vals.productName);
-      const patch = { lastSupplier: vals.supplierName || null, lastCost: vals.unitCost || null,
-                       lastCanvassDate: vals.canvassDate || todayISO(), updatedAt: serverTimestamp() };
-      if (existing) await updateDoc(doc(db,"products",existing.id), patch);
-      else await addDoc(collection(db,"products"), {
-        name: vals.productName, ...patch, ownerId: myUid(),
-        department: state.profile.department, createdAt: serverTimestamp(), createdBy: myUid() });
-    }
-    if (vals.supplierName){
-      const existing = findByName("suppliers", vals.supplierName);
-      const patch = { lastCanvassDate: vals.canvassDate || todayISO(), updatedAt: serverTimestamp() };
+    for (const s of (suppliers||[])){
+      if (!s?.name) continue;
+      const existing = findByName("suppliers", s.name);
+      const patch = { lastCanvassDate: date, updatedAt: serverTimestamp() };
       if (existing) await updateDoc(doc(db,"suppliers",existing.id), patch);
       else await addDoc(collection(db,"suppliers"), {
-        name: vals.supplierName, contactPerson: vals.supplierContact || null, ...patch,
+        name: s.name, contactPerson: s.contact || null, phone: s.tel || null, ...patch,
         ownerId: myUid(), department: state.profile.department,
         createdAt: serverTimestamp(), createdBy: myUid() });
+    }
+    for (const it of (items||[])){
+      const name = it.itemCode ? `${it.itemCode} — ${it.desc||""}`.trim() : (it.desc||"").trim();
+      if (!name) continue;
+      const costs = (it.costs||[]).map(Number).filter(n=>n>0);
+      if (!costs.length) continue;
+      const low = Math.min(...costs);
+      const lowIdx = (it.costs||[]).findIndex(c=>Number(c)===low);
+      const patch = { lastSupplier: suppliers?.[lowIdx]?.name || null, lastCost: low,
+                       lastCanvassDate: date, updatedAt: serverTimestamp() };
+      const existing = findByName("products", name);
+      if (existing) await updateDoc(doc(db,"products",existing.id), patch);
+      else await addDoc(collection(db,"products"), {
+        name, ownerId: myUid(), department: state.profile.department,
+        createdAt: serverTimestamp(), createdBy: myUid(), ...patch });
     }
   }catch(e){ console.warn("catalog auto-update", e); }
 }
@@ -4593,15 +4610,28 @@ function proceedRecord(col, id){
     openForm("canvass", null, {
       controlNo: d.controlNo || null, inquiryId: id,
       accountId: d.relatedType === "Account" ? d.relatedId : null,
-      refNo: d.controlNo ? `Canvass for ${d.controlNo}` : "",
+      items: [{ itemCode:"", desc: d.productInterest || "", uom:"", qty:1, costs:["","",""] }],
+      suppliers: [{name:"",tel:"",contact:""},{name:"",tel:"",contact:""},{name:"",tel:"",contact:""}],
       ownerId: d.ownerId
     });
   } else if (col === "canvass"){
+    const suppliers = Array.isArray(d.suppliers) ? d.suppliers : [];
+    const named = suppliers.map((s,i)=>({s,i})).filter(x=>x.s?.name);
+    if (!named.length){ toast("Add at least one supplier to this sheet first.", true); return; }
+    let supIdx = d.selectedSupplier;
+    if (supIdx == null || !suppliers[supIdx]?.name){
+      supIdx = named[0].i;
+      toast(`No supplier marked as winner — using ${suppliers[supIdx].name}. Open the sheet to choose one instead.`, true);
+    }
+    const sup = suppliers[supIdx] || {};
+    const items = (Array.isArray(d.items) ? d.items : [])
+      .filter(it=>it.desc || it.itemCode)
+      .map(it=>({ desc: [it.itemCode,it.desc].filter(Boolean).join(" — "), qty: it.qty||1, price: (it.costs||[])[supIdx] || "" }));
     openForm("costing", null, {
       controlNo: d.controlNo || null, canvassId: id,
       accountId: d.accountId || null, dealId: d.dealId || null,
-      supplierName: d.supplierName || "", supplierContact: d.supplierContact || "",
-      items: [{ desc: d.productName || "", qty:1, price: d.unitCost || "" }],
+      supplierName: sup.name || "", supplierContact: sup.contact || "",
+      items: items.length ? items : [{ desc:"", qty:1, price:"" }],
       ownerId: d.ownerId
     });
   } else if (col === "costing"){
@@ -4624,6 +4654,7 @@ function proceedRecord(col, id){
 function openDetail(col,id){
   if (col === "quotations") return openQuoteDetail(id);
   if (col === "costing") return openCostingDetail(id);
+  if (col === "canvass") return openCanvassDetail(id);
   const S = SCHEMAS[col], d = state.data[col].get(id);
   if(!d) return;
   const related = rows("activities").filter(a=>a.relatedId===id)
@@ -4665,7 +4696,6 @@ function openDetail(col,id){
     <div class="modal-f">
       ${col==="leads" && d.status!=="Converted" ? `<button class="btn" id="conv">Convert to deal</button>`:""}
       ${col==="inquiries" && canWrite(d) ? `<button class="btn" id="to-canvass">Create Canvass Summary</button>`:""}
-      ${col==="canvass" && canWrite(d) ? `<button class="btn" id="to-costing">Create Product Costing</button>`:""}
       <div class="spacer"></div>
       ${canWrite(d) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
       <button class="btn" data-close>Close</button>
@@ -4688,10 +4718,8 @@ function openDetail(col,id){
   // The Sales & Quotation Management pipeline: each stage hands its control
   // number and identifying details forward to the next, so a quotation can
   // always be traced back to the inquiry it started from.
-  ["#to-canvass","#to-costing"].forEach(sel=>{
-    const btn = document.querySelector(sel);
-    if (btn) btn.onclick = ()=>{ closeModal(true); proceedRecord(col, id); };
-  });
+  const toCanvass = document.querySelector("#to-canvass");
+  if (toCanvass) toCanvass.onclick = ()=>{ closeModal(true); proceedRecord(col, id); };
   document.querySelectorAll("[data-quickdone]").forEach(b=> b.onclick = async ()=>{
     await markDone(b.dataset.quickdone); closeModal(true);
   });
@@ -5058,6 +5086,287 @@ function itemRow(i, it={}){
    recalculation, multi-currency item lines, and fields that show or hide
    depending on whether the purchase is international. See costingFigures()
    for the maths this mirrors. */
+/* ---- Canvass Summary: item table priced by up to three suppliers ----
+   Mirrors the printed Canvass Sheet exactly — one set of items, three
+   supplier columns, a total per supplier so the cheapest is obvious, and a
+   "mark as winner" control that decides which supplier's pricing carries
+   forward into Product Costing. */
+function cvItemRow(l){
+  return `<tr data-id="${l._id}">
+    <td style="width:74px"><input data-f="itemCode" value="${esc(l.itemCode||"")}" placeholder="Code"></td>
+    <td><input data-f="desc" value="${esc(l.desc||"")}" placeholder="Item description"></td>
+    <td style="width:56px"><input data-f="uom" value="${esc(l.uom||"")}" placeholder="pc"></td>
+    <td style="width:58px"><input data-f="qty" type="number" min="0" step="any" value="${esc(l.qty??1)}"></td>
+    ${[0,1,2].map(i=>`
+      <td style="width:84px"><input data-f="cost${i}" type="number" min="0" step="any" value="${esc((l.costs||[])[i]??"")}"></td>
+      <td style="width:92px;text-align:right;font-family:var(--mono);font-size:12.5px" data-out="amt${i}">—</td>`).join("")}
+    <td style="width:26px"><button class="x" data-del-line="${l._id}" title="Remove">×</button></td>
+  </tr>`;
+}
+function openCanvassForm(id, preset){
+  if (id){
+    const existing = state.data.canvass.get(id);
+    if (existing && !canWrite(existing)) return toast(readOnlyNote(existing), true);
+  }
+  const d = id ? { ...state.data.canvass.get(id) } : { ...(preset || {}) };
+  let items = Array.isArray(d.items) && d.items.length ? d.items.map(i=>({...i})) : [{itemCode:"",desc:"",uom:"",qty:1,costs:["","",""]}];
+  let nextLineId = 1;
+  items = items.map(i=>({ ...i, _id: nextLineId++ }));
+  const suppliers = Array.isArray(d.suppliers) && d.suppliers.length===3 ? d.suppliers : [{name:"",tel:"",contact:""},{name:"",tel:"",contact:""},{name:"",tel:"",contact:""}];
+  let selectedSupplier = d.selectedSupplier ?? null;
+  const accts = rows("accounts").sort((a,b)=>(a.name||"").localeCompare(b.name||""));
+  const dls   = rows("deals").sort((a,b)=>(a.title||"").localeCompare(b.title||""));
+
+  modal(`
+    <div class="modal-h"><h3>${id?"Edit canvass summary":"New canvass summary"}</h3>
+      <button class="x" data-close aria-label="Close">×</button></div>
+    <div class="modal-b">
+      <div id="form-err" class="err hidden"></div>
+      <div class="fgrid">
+        ${d.controlNo ? `<div class="field"><label for="cv-control">Control No.</label>
+          <input id="cv-control" value="${esc(d.controlNo)}"${isAdmin()?"":" readonly"}>
+          <span class="hint">${isAdmin()?"Traces this record through the pipeline. Change with care.":"System-generated — only an administrator can change this."}</span></div>` : ""}
+        <div class="field"><label for="cv-date">Date</label>
+          <input id="cv-date" type="date" value="${esc(d.canvassDate||todayISO())}"></div>
+        <div class="field"><label for="cv-acct">Customer</label>
+          <select id="cv-acct"><option value="">—</option>
+            ${accts.map(a=>`<option value="${a.id}"${a.id===d.accountId?" selected":""}>${esc(a.name)}</option>`).join("")}</select></div>
+        <div class="field"><label for="cv-deal">Opportunity</label>
+          <select id="cv-deal"><option value="">— None —</option>
+            ${dls.map(x=>`<option value="${x.id}"${x.id===d.dealId?" selected":""}>${esc(x.title)}</option>`).join("")}</select></div>
+        <div class="field"><label for="cv-owner">Canvassed by</label>
+          <select id="cv-owner"${isManager()?"":" disabled"}>
+            ${isManager()?ownerOptions(d.ownerId||myUid()):`<option value="${myUid()}">${esc(state.profile.displayName||"You")}</option>`}</select></div>
+        <div class="field"><label for="cv-noted">Noted by</label>
+          <select id="cv-noted"><option value="">—</option>${ownerOptions(d.notedBy||"")}</select></div>
+        <div class="field"><label for="cv-approved">Approved by</label>
+          <select id="cv-approved"><option value="">—</option>${ownerOptions(d.approvedBy||"")}</select></div>
+      </div>
+
+      <div class="eyebrow" style="margin:20px 0 10px">Suppliers</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
+        ${[0,1,2].map(i=>`
+          <div>
+            <div class="field"><label for="cv-sup${i}-name">Supplier ${i+1}</label>
+              <input id="cv-sup${i}-name" value="${esc(suppliers[i]?.name||"")}" placeholder="Supplier name"></div>
+            <div class="field" style="margin-top:9px"><label for="cv-sup${i}-tel">Tel. No.</label>
+              <input id="cv-sup${i}-tel" value="${esc(suppliers[i]?.tel||"")}"></div>
+            <div class="field" style="margin-top:9px"><label for="cv-sup${i}-contact">Contact person</label>
+              <input id="cv-sup${i}-contact" value="${esc(suppliers[i]?.contact||"")}"></div>
+          </div>`).join("")}
+      </div>
+
+      <div class="eyebrow" style="margin:20px 0 2px">Items</div>
+      <table class="items">
+        <thead><tr>
+          <th>Code</th><th>Description</th><th>U/M</th><th>Qty</th>
+          ${[0,1,2].map(i=>`<th style="text-align:right" colspan="2" id="cv-th${i}">Supplier ${i+1}</th>`).join("")}
+          <th></th>
+        </tr></thead>
+        <tbody id="cv-items">${items.map(i=>cvItemRow(i)).join("")}</tbody>
+      </table>
+      <button class="btn sm" id="cv-add" style="margin-top:8px">+ Add item</button>
+
+      <div class="eyebrow" style="margin:20px 0 9px">Totals &amp; winner</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
+        ${[0,1,2].map(i=>`
+          <div class="card" style="padding:12px">
+            <div style="font-size:12px;color:var(--muted)" id="cv-th-name${i}">Supplier ${i+1}</div>
+            <div style="font-size:18px;font-weight:600;margin:4px 0 10px;font-family:var(--mono)" id="cv-total${i}">₱0</div>
+            <button class="btn sm" id="cv-win${i}" type="button" style="width:100%">Mark as winner</button>
+          </div>`).join("")}
+      </div>
+      <p class="note">Marking a winner decides whose pricing carries forward when you Proceed to Product Costing — you can change it any time before then.</p>
+
+      <div class="field full" style="margin-top:16px"><label for="cv-remarks">Remarks</label>
+        <textarea id="cv-remarks">${esc(d.remarks||"")}</textarea></div>
+    </div>
+    <div class="modal-f">
+      ${id?`<button class="btn dgr" id="cv-del">Delete</button>`:""}
+      <div class="spacer"></div>
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn pri" id="cv-save">${id?"Save canvass summary":"Create canvass summary"}</button>
+    </div>`, true);
+
+  function collectItems(){
+    return Array.from(document.querySelectorAll("#cv-items tr[data-id]")).map(tr=>({
+      itemCode: tr.querySelector('[data-f="itemCode"]').value,
+      desc:     tr.querySelector('[data-f="desc"]').value,
+      uom:      tr.querySelector('[data-f="uom"]').value,
+      qty:      Number(tr.querySelector('[data-f="qty"]').value||0),
+      costs:    [0,1,2].map(i=> Number(tr.querySelector(`[data-f="cost${i}"]`)?.value||0))
+    }));
+  }
+  function collectSuppliers(){
+    return [0,1,2].map(i=>({
+      name: $(`#cv-sup${i}-name`).value.trim(),
+      tel: $(`#cv-sup${i}-tel`).value.trim(),
+      contact: $(`#cv-sup${i}-contact`).value.trim()
+    }));
+  }
+  function drawItems(){
+    const body = $("#cv-items");
+    body.innerHTML = items.map(i=>cvItemRow(i)).join("");
+    body.querySelectorAll("tr[data-id]").forEach(tr=>{
+      const line = items.find(x=>x._id === Number(tr.dataset.id));
+      tr.querySelectorAll("[data-f]").forEach(inp=>
+        inp.addEventListener("input", ()=>{
+          const f = inp.dataset.f;
+          if (f.startsWith("cost")) line.costs[Number(f.slice(4))] = Number(inp.value||0);
+          else line[f] = inp.type==="number" ? Number(inp.value||0) : inp.value;
+          recalc();
+        }));
+    });
+    body.querySelectorAll("[data-del-line]").forEach(b=> b.onclick = ()=>{
+      if (items.length <= 1) return;
+      items = items.filter(x=>x._id !== Number(b.dataset.delLine));
+      drawItems(); recalc();
+    });
+  }
+  function recalc(){
+    const sup = collectSuppliers();
+    const totals = [0,0,0];
+    document.querySelectorAll("#cv-items tr[data-id]").forEach(tr=>{
+      const qty = Number(tr.querySelector('[data-f="qty"]').value||0);
+      [0,1,2].forEach(i=>{
+        const cost = Number(tr.querySelector(`[data-f="cost${i}"]`).value||0);
+        const amt = qty*cost;
+        totals[i] += amt;
+        const out = tr.querySelector(`[data-out="amt${i}"]`);
+        if (out) out.textContent = amt ? money(amt) : "—";
+      });
+    });
+    const eligible = [0,1,2].filter(i=>sup[i].name && totals[i]>0);
+    const lowest = eligible.length ? eligible.reduce((a,b)=>totals[b]<totals[a]?b:a) : null;
+    [0,1,2].forEach(i=>{
+      $(`#cv-th-name${i}`).textContent = sup[i].name || `Supplier ${i+1}`;
+      $(`#cv-th${i}`).textContent = sup[i].name || `Supplier ${i+1}`;
+      $(`#cv-total${i}`).innerHTML = money(totals[i]) + (i===lowest ? ` <span class="pill accent" style="font-size:10px">Lowest</span>` : "");
+      const btn = $(`#cv-win${i}`);
+      btn.classList.toggle("pri", selectedSupplier===i);
+      btn.textContent = selectedSupplier===i ? "✓ Winner" : "Mark as winner";
+    });
+  }
+
+  $("#cv-add").onclick = ()=>{ items.push({ _id: nextLineId++, itemCode:"", desc:"", uom:"", qty:1, costs:["","",""] }); drawItems(); recalc(); };
+  [0,1,2].forEach(i=>{
+    ["name","tel","contact"].forEach(k=> $(`#cv-sup${i}-${k}`).addEventListener("input", recalc));
+    $(`#cv-win${i}`).onclick = ()=>{ selectedSupplier = selectedSupplier===i ? null : i; recalc(); };
+  });
+  drawItems(); recalc();
+
+  const del = document.querySelector("#cv-del");
+  if (del) del.onclick = async ()=>{ if (await deleteRecord("canvass", id)) closeModal(true); };
+
+  $("#cv-save").onclick = async ()=>{
+    const box = $("#form-err");
+    const items2 = collectItems().filter(i=>i.desc || i.itemCode);
+    const suppliers2 = collectSuppliers();
+    if (!items2.length){ box.textContent = "Add at least one item."; box.classList.remove("hidden"); return; }
+    if (!suppliers2.some(s=>s.name)){ box.textContent = "Add at least one supplier."; box.classList.remove("hidden"); return; }
+    const ownerId = isManager() ? ($("#cv-owner").value || myUid()) : (d.ownerId || myUid());
+    const owner = state.users.get(ownerId);
+    const namedCount = suppliers2.filter(s=>s.name).length;
+    const payload = {
+      controlNo: ($("#cv-control")?.value.trim() || d.controlNo || null),
+      inquiryId: d.inquiryId || null,
+      accountId: $("#cv-acct").value || null, dealId: $("#cv-deal").value || null,
+      accountManagerId: state.data.accounts.get($("#cv-acct").value)?.accountManagerId || null,
+      canvassDate: $("#cv-date").value || null,
+      ownerId, department: owner?.department || state.profile.department,
+      notedBy: $("#cv-noted").value || null, approvedBy: $("#cv-approved").value || null,
+      suppliers: suppliers2, items: items2,
+      selectedSupplier: (selectedSupplier!=null && suppliers2[selectedSupplier]?.name) ? selectedSupplier : null,
+      itemsSummary: items2[0].desc + (items2.length>1?` +${items2.length-1} more`:""),
+      supplierSummary: suppliers2.filter(s=>s.name).map(s=>s.name).join(", ") || `${namedCount} suppliers`,
+      selectedSupplierName: (selectedSupplier!=null && suppliers2[selectedSupplier]?.name) || null,
+      remarks: $("#cv-remarks").value||null,
+      updatedAt: serverTimestamp()
+    };
+    if (!id) payload.status = "Draft";
+    $("#cv-save").disabled = true;
+    try{
+      if (id) await tracked(updateDoc(doc(db,"canvass",id), payload));
+      else{
+        payload.createdAt = serverTimestamp(); payload.createdBy = myUid();
+        await tracked(addDoc(collection(db,"canvass"), payload));
+      }
+      await upsertCanvassCatalog(items2, suppliers2, payload.canvassDate);
+      closeModal(true); toast("Canvass summary " + (id?"saved":"created"));
+    }catch(e){
+      $("#cv-save").disabled = false;
+      box.textContent = e.message; box.classList.remove("hidden");
+    }
+  };
+}
+
+/* Read-only view of a saved canvass sheet — the item grid and per-supplier
+   totals, laid out like the printed sheet, with the marked winner (if any)
+   highlighted and feeding into "Create Product Costing". */
+function openCanvassDetail(id){
+  const d = state.data.canvass.get(id); if(!d) return;
+  const items = Array.isArray(d.items) ? d.items : [];
+  const suppliers = Array.isArray(d.suppliers) && d.suppliers.length===3 ? d.suppliers : [{},{},{}];
+  const totals = [0,1,2].map(i=> items.reduce((s,it)=> s + Number(it.qty||0)*Number((it.costs||[])[i]||0), 0));
+  modal(`
+    <div class="modal-h">
+      <div><div class="eyebrow">Canvass summary</div><h3>${esc(d.controlNo || "Canvass sheet")}</h3></div>
+      <button class="x" data-close aria-label="Close">×</button></div>
+    <div class="modal-b">
+      <div class="det">
+        ${d.controlNo ? `<div class="r"><div class="k">Control No.</div><div class="v mono" style="font-size:13px">${esc(d.controlNo)}</div></div>` : ""}
+        <div class="r"><div class="k">Date</div><div class="v mono" style="font-size:13px">${fmtDate(d.canvassDate)}</div></div>
+        <div class="r"><div class="k">Customer</div><div class="v">${esc(recordTitle("accounts",d.accountId))}</div></div>
+        <div class="r"><div class="k">Status</div><div class="v">${pillFor("status",d.status)}</div></div>
+        <div class="r"><div class="k">Canvassed by</div><div class="v">${personCell(d.ownerId)}</div></div>
+        ${d.notedBy ? `<div class="r"><div class="k">Noted by</div><div class="v">${personCell(d.notedBy)}</div></div>` : ""}
+        ${d.approvedBy ? `<div class="r"><div class="k">Approved by</div><div class="v">${personCell(d.approvedBy)}</div></div>` : ""}
+      </div>
+
+      <table class="items" style="margin-top:18px">
+        <thead><tr>
+          <th>Code</th><th>Description</th><th>U/M</th><th style="text-align:right">Qty</th>
+          ${suppliers.map((s,i)=>`<th style="text-align:right" colspan="2">${esc(s?.name||`Supplier ${i+1}`)}</th>`).join("")}
+        </tr></thead>
+        <tbody>${items.map(it=>`<tr>
+          <td style="padding:7px 6px">${esc(it.itemCode||"—")}</td>
+          <td style="padding:7px 6px">${esc(it.desc||"—")}</td>
+          <td style="padding:7px 6px">${esc(it.uom||"—")}</td>
+          <td class="num" style="padding:7px 6px">${it.qty??"—"}</td>
+          ${[0,1,2].map(i=>{
+            const c = Number((it.costs||[])[i]||0), amt = Number(it.qty||0)*c;
+            return `<td class="num" style="padding:7px 6px">${c?money(c):"—"}</td>
+              <td class="num" style="padding:7px 6px${d.selectedSupplier===i?`;font-weight:600;color:var(--accent)`:""}">${amt?money(amt):"—"}</td>`;
+          }).join("")}
+        </tr>`).join("")}</tbody>
+      </table>
+
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:18px">
+        ${[0,1,2].map(i=>`
+          <div class="card" style="padding:12px${d.selectedSupplier===i?`;border-color:var(--accent)`:""}">
+            <div style="font-size:12px;color:var(--muted)">${esc(suppliers[i]?.name||`Supplier ${i+1}`)}</div>
+            <div style="font-size:18px;font-weight:600;margin:4px 0;font-family:var(--mono)">${money(totals[i])}</div>
+            ${suppliers[i]?.tel ? `<div style="font-size:11.5px;color:var(--muted)">${esc(suppliers[i].tel)}</div>` : ""}
+            ${suppliers[i]?.contact ? `<div style="font-size:11.5px;color:var(--muted)">${esc(suppliers[i].contact)}</div>` : ""}
+            ${d.selectedSupplier===i ? `<span class="pill accent" style="margin-top:8px;display:inline-block">Winner</span>` : ""}
+          </div>`).join("")}
+      </div>
+      ${d.remarks ? `<div style="margin-top:16px"><div class="eyebrow">Remarks</div>
+        <p style="font-size:13px;white-space:pre-wrap;margin:5px 0 0">${esc(d.remarks)}</p></div>` : ""}
+    </div>
+    <div class="modal-f">
+      ${canWrite(d) ? `<button class="btn" id="cv-to-costing">Create Product Costing</button>` : ""}
+      <div class="spacer"></div>
+      ${canWrite(d) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
+      <button class="btn" data-close>Close</button>
+      ${canWrite(d) ? `<button class="btn pri" id="cv-edit">Edit</button>` : ""}
+    </div>`, true);
+  const em = document.querySelector("#cv-edit");
+  if (em) em.onclick = ()=>{ closeModal(true); openCanvassForm(id); };
+  const tc = document.querySelector("#cv-to-costing");
+  if (tc) tc.onclick = ()=>{ closeModal(true); proceedRecord("canvass", id); };
+}
+
 function openCostingForm(id, preset){
   if (id){
     const existing = state.data.costing.get(id);
