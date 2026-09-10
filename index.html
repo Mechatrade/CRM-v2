@@ -1378,6 +1378,24 @@ function shortMoney(n){
    landed cost (+ telegraphic/shipping/freight, converted to PHP), total
    cost (+ local delivery), then a GP-based selling price and contingency. */
 const CUR_SYM = { USD:"$", CNY:"¥", EUR:"€", JPY:"¥", SGD:"S$", KRW:"₩", TWD:"NT$", PHP:"₱" };
+/* Inquiry canvass sheet: each supplier is tagged Local or International.
+   International suppliers get an "Origin" country, which suggests a
+   default currency (still editable) — same currency list Product Costing
+   uses, so the pick carries straight through when Proceed hands the
+   winning supplier's info to the costing sheet. */
+const COUNTRY_CURRENCY = {
+  "China":"CNY", "United States":"USD", "Japan":"JPY", "Singapore":"SGD",
+  "South Korea":"KRW", "Taiwan":"TWD", "Germany":"EUR", "Other":"USD"
+};
+const SUPPLIER_ORIGINS = Object.keys(COUNTRY_CURRENCY);
+function originCurrency(country){ return COUNTRY_CURRENCY[country] || "USD"; }
+/* Formats a figure in its own currency (CUR_SYM), unlike money() which
+   always uses the org's base currency — for showing a foreign supplier's
+   shipping cost etc. in the currency it was actually entered in. */
+function fx(n, cur){
+  const v = Number(n||0);
+  return (CUR_SYM[cur] || (cur?cur+" ":"")) + v.toLocaleString(undefined,{maximumFractionDigits:2});
+}
 function costingIsIntl(d){ return (d.purchaseType || "International") === "International"; }
 function costingCurrency(d){ return costingIsIntl(d) ? (d.supplierCurrency || "USD") : "PHP"; }
 function costingRate(d){ return costingIsIntl(d) ? (Number(d.conversionRate) || 1) : 1; }
@@ -4605,6 +4623,8 @@ function proceedRecord(col, id){
       accountId: d.relatedType === "Account" ? d.relatedId : null,
       supplierName: sup.name || "", supplierContact: sup.contact || "",
       shippingCost: sup.shippingCost || null,
+      purchaseType: sup.purchaseType || "International",
+      supplierCurrency: sup.purchaseType === "International" ? (sup.currency || "USD") : "USD",
       items: items.length ? items : [{ desc:"", qty:1, price:"" }],
       ownerId: d.ownerId
     });
@@ -5078,6 +5098,8 @@ function iqItemRow(l, supCount){
   </tr>`;
 }
 function iqSupplierBlock(s, idx){
+  const intl = (s.purchaseType||"Local") === "International";
+  const curVal = s.currency || originCurrency(s.originCountry);
   return `<div class="card" data-sup="${s._id}" style="padding:12px;position:relative">
     <button class="x" data-del-sup="${s._id}" title="Remove supplier" style="position:absolute;top:8px;right:8px">×</button>
     <div class="field"><label>Supplier ${idx+1}</label>
@@ -5088,7 +5110,14 @@ function iqSupplierBlock(s, idx){
       <input data-sf="contact" value="${esc(s.contact||"")}"></div>
     <div class="field" style="margin-top:9px"><label>Lead time</label>
       <input data-sf="leadTime" value="${esc(s.leadTime||"")}" placeholder="e.g. 2 weeks"></div>
-    <div class="field" style="margin-top:9px"><label>Shipping cost</label>
+    <div class="field" style="margin-top:9px"><label>Supplier type</label>
+      <select data-sf="purchaseType">${["Local","International"].map(o=>opt(o,s.purchaseType||"Local")).join("")}</select></div>
+    ${intl ? `
+    <div class="field" style="margin-top:9px"><label>Origin</label>
+      <select data-sf="originCountry"><option value="">Select origin</option>${SUPPLIER_ORIGINS.map(o=>opt(o,s.originCountry||"")).join("")}</select></div>
+    <div class="field" style="margin-top:9px"><label>Currency</label>
+      <select data-sf="currency">${Object.keys(CUR_SYM).filter(c=>c!=="PHP").map(c=>opt(c,curVal)).join("")}</select></div>` : ""}
+    <div class="field" style="margin-top:9px"><label>Shipping cost${intl?` (${esc(curVal)})`:""}</label>
       <input data-sf="shippingCost" type="number" min="0" step="any" value="${esc(s.shippingCost??"")}"></div>
   </div>`;
 }
@@ -5192,7 +5221,7 @@ function openInquiryForm(id, preset){
   function render(){
     $("#iq-items-head").innerHTML = `<tr>
       <th>Code</th><th>Description</th><th>U/M</th><th>Qty</th>
-      ${suppliers.map((s,i)=>`<th style="text-align:right" colspan="2">${esc(s.name||`Supplier ${i+1}`)}</th>`).join("")}
+      ${suppliers.map((s,i)=>`<th style="text-align:right" colspan="2">${esc(s.name||`Supplier ${i+1}`)}${s.purchaseType==="International"?` <span style="font-weight:400;color:var(--muted)">(${esc(s.currency||"USD")})</span>`:""}</th>`).join("")}
       <th></th>
     </tr>`;
     $("#iq-items").innerHTML = items.map(it=>iqItemRow(it, suppliers.length)).join("");
@@ -5213,7 +5242,16 @@ function openInquiryForm(id, preset){
       const sid = Number(block.dataset.sup);
       const s = suppliers.find(x=>x._id===sid);
       block.querySelectorAll("[data-sf]").forEach(inp=> inp.addEventListener("input", ()=>{
-        s[inp.dataset.sf] = inp.type==="number" ? Number(inp.value||0) : inp.value;
+        const key = inp.dataset.sf;
+        s[key] = inp.type==="number" ? Number(inp.value||0) : inp.value;
+        // Type or origin changes affect which fields show, and origin
+        // suggests a default currency — both need the block redrawn.
+        if (key === "purchaseType"){
+          if (s.purchaseType === "International") s.currency = s.currency || originCurrency(s.originCountry);
+          else { s.originCountry = ""; s.currency = ""; }
+          render(); return;
+        }
+        if (key === "originCountry"){ s.currency = originCurrency(s.originCountry); render(); return; }
         recalc();
       }));
       block.querySelector("[data-del-sup]").onclick = ()=>{
@@ -5229,10 +5267,13 @@ function openInquiryForm(id, preset){
 
     $("#iq-totals").innerHTML = suppliers.map((s,i)=>`
       <div class="card" style="padding:12px" data-total="${i}">
-        <div style="font-size:12px;color:var(--muted)" data-tname>${esc(s.name||`Supplier ${i+1}`)}</div>
+        <div style="font-size:12px;color:var(--muted)" data-tname>${esc(s.name||`Supplier ${i+1}`)}${s.purchaseType==="International"?` (${esc(s.currency||"USD")})`:""}</div>
         <div style="font-size:18px;font-weight:600;margin:4px 0 10px;font-family:var(--mono)" data-tval>₱0</div>
         <button class="btn sm" data-win="${i}" type="button" style="width:100%">Mark as winner</button>
       </div>`).join("");
+    if (suppliers.some(s=>s.purchaseType==="International") && suppliers.some(s=>(s.purchaseType||"Local")==="Local"))
+      $("#iq-totals").insertAdjacentHTML("beforeend",
+        `<p class="note" style="grid-column:1/-1">Totals aren't currency-converted — international and local supplier figures are shown in their own currency, so compare with that in mind.</p>`);
     $("#iq-totals").querySelectorAll("[data-win]").forEach(btn=> btn.onclick = ()=>{
       const i = Number(btn.dataset.win);
       selectedSupplier = selectedSupplier===i ? null : i;
@@ -5252,7 +5293,9 @@ function openInquiryForm(id, preset){
       });
     });
     document.querySelectorAll("#iq-items-head th[colspan]").forEach((th,i)=>{
-      th.textContent = suppliers[i]?.name || `Supplier ${i+1}`;
+      const s = suppliers[i] || {};
+      th.innerHTML = esc(s.name||`Supplier ${i+1}`)
+        + (s.purchaseType==="International" ? ` <span style="font-weight:400;color:var(--muted)">(${esc(s.currency||"USD")})</span>` : "");
     });
     const totals = computeTotals();
     const eligible = suppliers.map((s,i)=>i).filter(i=>suppliers[i].name && totals[i]>0);
@@ -5260,7 +5303,7 @@ function openInquiryForm(id, preset){
     suppliers.forEach((s,i)=>{
       const card = document.querySelector(`#iq-totals [data-total="${i}"]`);
       if (!card) return;
-      card.querySelector("[data-tname]").textContent = s.name || `Supplier ${i+1}`;
+      card.querySelector("[data-tname]").textContent = (s.name || `Supplier ${i+1}`) + (s.purchaseType==="International" ? ` (${s.currency||"USD"})` : "");
       card.querySelector("[data-tval]").innerHTML = money(totals[i]) + (i===lowest ? ` <span class="pill accent" style="font-size:10px">Lowest</span>` : "");
       const btn = card.querySelector("[data-win]");
       btn.classList.toggle("pri", selectedSupplier===i);
@@ -5309,10 +5352,16 @@ function openInquiryForm(id, preset){
       costs: suppliers.map((_,i)=> Number((it.costs||[])[i]||0))
     }));
     if (!items2.length){ box.textContent = "Add at least one item."; box.classList.remove("hidden"); return; }
-    const suppliers2 = suppliers.map(s=>({
-      name: s.name?.trim()||null, tel: s.tel?.trim()||null, contact: s.contact?.trim()||null,
-      leadTime: s.leadTime?.trim()||null, shippingCost: Number(s.shippingCost||0)||null
-    }));
+    const suppliers2 = suppliers.map(s=>{
+      const intl = (s.purchaseType||"Local") === "International";
+      return {
+        name: s.name?.trim()||null, tel: s.tel?.trim()||null, contact: s.contact?.trim()||null,
+        leadTime: s.leadTime?.trim()||null, shippingCost: Number(s.shippingCost||0)||null,
+        purchaseType: intl ? "International" : "Local",
+        originCountry: intl ? (s.originCountry||null) : null,
+        currency: intl ? (s.currency || originCurrency(s.originCountry)) : null
+      };
+    });
     const ownerId = isManager() ? ($("#iq-owner").value || myUid()) : (d.ownerId || myUid());
     const owner = state.users.get(ownerId);
     const namedSuppliers = suppliers2.filter(s=>s.name);
@@ -5411,7 +5460,10 @@ function openInquiryDetail(id){
             ${s?.tel ? `<div style="font-size:11.5px;color:var(--muted);margin-top:4px">${esc(s.tel)}</div>` : ""}
             ${s?.contact ? `<div style="font-size:11.5px;color:var(--muted)">${esc(s.contact)}</div>` : ""}
             ${s?.leadTime ? `<div style="font-size:11.5px;color:var(--muted);margin-top:4px">Lead time: ${esc(s.leadTime)}</div>` : ""}
-            ${s?.shippingCost ? `<div style="font-size:11.5px;color:var(--muted)">Shipping: ${money(s.shippingCost)}</div>` : ""}
+            ${s?.purchaseType==="International"
+              ? `<div style="font-size:11.5px;color:var(--muted);margin-top:4px">${esc(s.originCountry||"Origin not set")} · ${esc(s.currency||"USD")}</div>`
+              : `<div style="font-size:11.5px;color:var(--muted);margin-top:4px">Local supplier</div>`}
+            ${s?.shippingCost ? `<div style="font-size:11.5px;color:var(--muted)">Shipping: ${s.purchaseType==="International"?fx(s.shippingCost,s.currency):money(s.shippingCost)}</div>` : ""}
             ${d.selectedSupplier===i ? `<span class="pill accent" style="margin-top:8px;display:inline-block">Winner</span>` : ""}
           </div>`).join("")}
       </div>
@@ -6302,8 +6354,9 @@ function inquiryDocHTML(d){
       ${suppliers.map((s,i)=>`<div class="card">
         <div class="nm">${esc(s?.name||`Supplier ${i+1}`)}${d.selectedSupplier===i?" — WINNER":""}</div>
         <div class="tt">${money(totals[i])}</div>
+        ${s?.purchaseType==="International"?`<div style="font-size:9px;color:#8496A7;margin-top:3px">${esc(s.originCountry||"")} · ${esc(s.currency||"USD")}</div>`:""}
         ${s?.leadTime?`<div style="font-size:9px;color:#8496A7;margin-top:3px">Lead time: ${esc(s.leadTime)}</div>`:""}
-        ${s?.shippingCost?`<div style="font-size:9px;color:#8496A7">+ ${money(s.shippingCost)} shipping</div>`:""}
+        ${s?.shippingCost?`<div style="font-size:9px;color:#8496A7">+ ${s.purchaseType==="International"?fx(s.shippingCost,s.currency):money(s.shippingCost)} shipping</div>`:""}
       </div>`).join("")}
     </div>` : `<table class="it"><thead><tr>
         <th style="width:60px">Code</th><th>Description</th><th style="width:46px">U/M</th><th style="width:46px" class="c">Qty</th>
