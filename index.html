@@ -1107,6 +1107,11 @@ const SCHEMAS = {
       { k:"contactId",  l:"Attention to",type:"ref",    refTo:"contacts" },
       { k:"costingId",  l:"From costing", type:"ref",   refTo:"costing" },
       { k:"status",     l:"Status",      type:"select", opts:["Draft","Sent","Viewed","Approved","Declined","Expired"], def:"Draft", table:true },
+      { k:"revision",   l:"Revisions",   type:"number", table:true },
+      { k:"approvedBy", l:"Approved by", type:"ref",    refTo:"users" },
+      { k:"approvedAt", l:"Approved on", type:"date" },
+      { k:"declinedBy", l:"Declined by", type:"ref",    refTo:"users" },
+      { k:"declinedAt", l:"Declined on", type:"date" },
       { k:"issueDate",  l:"Issued",      type:"date",   table:true },
       { k:"validUntil", l:"Valid until", type:"date",   table:true },
       { k:"total",      l:"Total",       type:"money",  table:true },
@@ -1195,7 +1200,7 @@ const SCHEMAS = {
     label:"Inquiry", plural:"Customer / lead inquiries", icon:"◐", titleField:"subject",
     fields:[
       { k:"subject",        l:"Subject",         type:"text",   req:true, table:true },
-      { k:"controlNo",      l:"Control No. (auto)", type:"text", table:true },
+      { k:"controlNo",      l:"Control No.", type:"text", table:true, system:true },
       { k:"relatedType",    l:"Inquiry from",     type:"select", opts:["Lead","Account"], def:"Lead", table:true },
       { k:"relatedId",      l:"Lead / Customer",  type:"ref",    refTo:"dynamic", table:true },
       { k:"contactId",      l:"Contact person",   type:"ref",    refTo:"contacts" },
@@ -1211,7 +1216,7 @@ const SCHEMAS = {
     label:"Canvass", plural:"Canvass summary", icon:"⌗", titleField:"refNo",
     fields:[
       { k:"refNo",          l:"Reference",        type:"text",   req:true, table:true },
-      { k:"controlNo",      l:"Control No.",      type:"text",   table:true },
+      { k:"controlNo",      l:"Control No.",      type:"text",   table:true, system:true },
       { k:"inquiryId",      l:"From inquiry",     type:"ref",    refTo:"inquiries" },
       { k:"accountId",      l:"Customer",         type:"ref",    refTo:"accounts", table:true },
       { k:"dealId",         l:"Opportunity",      type:"ref",    refTo:"deals" },
@@ -1262,8 +1267,11 @@ const SCHEMAS = {
       { k:"sellingPrice",  l:"Selling price (₱)",type:"money" },
       { k:"quotedPrice",   l:"Customer pays (₱)",type:"money",  table:true },
       { k:"status",        l:"Status",            type:"select", opts:["Draft","Submitted for Approval","Approved","Rejected"], def:"Draft", table:true },
+      { k:"revision",      l:"Revisions",         type:"number", table:true },
       { k:"approvedBy",    l:"Approved by",       type:"ref",    refTo:"users" },
       { k:"approvedAt",    l:"Approved on",       type:"date" },
+      { k:"rejectedBy",    l:"Rejected by",       type:"ref",    refTo:"users" },
+      { k:"rejectedAt",    l:"Rejected on",       type:"date" },
       { k:"ownerId",       l:"Owner",             type:"ref",    refTo:"users", table:true, assignOnly:true },
       { k:"remarks",       l:"Remarks",           type:"textarea", full:true }
     ]
@@ -1284,7 +1292,7 @@ const SCHEMAS = {
     label:"Sales order", plural:"Sales orders", icon:"⬒", titleField:"orderNo",
     fields:[
       { k:"orderNo",       l:"Order no.",     type:"text",   req:true, table:true },
-      { k:"controlNo",     l:"Control No.",   type:"text",   table:true },
+      { k:"controlNo",     l:"Control No.",   type:"text",   table:true, system:true },
       { k:"accountId",     l:"Customer",      type:"ref",    refTo:"accounts", table:true },
       { k:"quotationId",   l:"Quotation",     type:"ref",    refTo:"quotations", table:true },
       { k:"dealId",        l:"Opportunity",   type:"ref",    refTo:"deals" },
@@ -2103,6 +2111,15 @@ function statusSelect(col, d, opts){
             : col === "deals" ? (d.stage || "")
             : (d.status || "");
   if (!canEditRecord(d)) return pillFor("status", now);
+  // Approving/rejecting a costing sheet, and approving/declining a
+  // quotation, is a manager or admin call — a rep can move it up to review
+  // but can't sign off on their own record. The current value stays
+  // selectable even when gated, so an already-decided record still shows
+  // correctly and can be pulled back to Draft for a revision.
+  const gated = { costing:["Approved","Rejected"], quotations:["Approved","Declined"] }[col];
+  if (gated && !isManager() && !isAdmin()){
+    opts = opts.filter(o=> !gated.includes(o) || o===now);
+  }
   const tone = ({ "Draft":"", "Sent":"info", "Viewed":"warn", "Approved":"accent",
                   "Declined":"alert", "Expired":"alert",
                   "New":"info", "Contacted":"info", "Qualified":"accent",
@@ -2124,6 +2141,26 @@ function personCell(uid){
     <div style="font-size:11px;color:var(--muted);margin-top:1px">
       <span class="pill ${DEPT_CLASS[u.department]||""}" style="font-size:10px;padding:1px 6px">${esc(role)}</span>
     </div>`;
+}
+
+/* Every decision logged by recordApprovalEvent(), most recent first, with
+   who decided it (name + role) and when. Shared by Costing and Quotation
+   detail views. */
+function approvalHistoryHTML(d){
+  if (!Array.isArray(d.approvalLog) || !d.approvalLog.length) return "";
+  const n = Number(d.revision||0);
+  return `<div style="margin-top:20px">
+    <div class="card-h" style="padding:0"><h3>Approval history</h3><div class="spacer"></div>
+      ${n ? `<span class="eyebrow">${n} revision${n===1?"":"s"}</span>` : ""}</div>
+    ${d.approvalLog.slice().reverse().map(e=>`
+      <div style="display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line-2)">
+        <span class="pill ${e.action==="Approved"?"accent":"alert"}" style="margin-top:1px">${esc(e.action)}</span>
+        <div style="flex:1">
+          <div style="font-size:13px">${esc(e.byName)} <span style="color:var(--muted)">— ${esc(e.byRole)}</span></div>
+          <div style="font-size:11.5px;color:var(--muted)">${fmtDate(e.at)}</div>
+        </div>
+      </div>`).join("")}
+  </div>`;
 }
 
 function pillFor(key,v){
@@ -4054,10 +4091,11 @@ function wireView(){
           status: el.value, statusChangedAt: serverTimestamp(), updatedAt: serverTimestamp()
         });
         toast(`Marked ${el.value}`);
-        if (col === "costing" && el.value === "Approved"){
-          await updateDoc(doc(db,col,id), { approvedBy: myUid(), approvedAt: serverTimestamp() });
+        if (col === "costing" && ["Approved","Rejected"].includes(el.value)){
+          await recordApprovalEvent(col, id, el.value);
         }
         if (col === "quotations"){
+          if (["Approved","Declined"].includes(el.value)) await recordApprovalEvent(col, id, el.value);
           const q = state.data.quotations.get(id);
           if (q) await syncDealFromQuote({ ...q, id, status: el.value }, el.value);
         }
@@ -4175,6 +4213,34 @@ async function markDone(id){
   try{ await tracked(updateDoc(doc(db,"activities",id), { status:"Done", completedAt: serverTimestamp(), updatedAt: serverTimestamp() })); toast("Marked done"); }
   catch(e){ toast(e.message,true); }
 }
+/* Every Approve/Reject (or Approve/Decline, for quotations) decision is
+   appended to the record's own approval history — who, their role, when,
+   and which way it went — and a rejection bumps the revision count. Firestore
+   can't hold a serverTimestamp() sentinel inside an array element, so log
+   entries use a plain client-side ISO time instead; fmtDate() reads either. */
+async function recordApprovalEvent(col, id, action){
+  const rec = state.data[col].get(id) || {};
+  const me = state.users.get(myUid());
+  const entry = {
+    action, by: myUid(),
+    byName: me?.displayName || state.profile?.displayName || "—",
+    byRole: ROLES[me?.role]?.label || me?.role || "—",
+    at: new Date().toISOString()
+  };
+  const log = Array.isArray(rec.approvalLog) ? [...rec.approvalLog, entry] : [entry];
+  const patch = { approvalLog: log, updatedAt: serverTimestamp() };
+  const rejecting = action === "Rejected" || action === "Declined";
+  if (rejecting){
+    patch.revision = Number(rec.revision||0) + 1;
+    patch[action === "Rejected" ? "rejectedBy" : "declinedBy"] = myUid();
+    patch[action === "Rejected" ? "rejectedAt" : "declinedAt"] = serverTimestamp();
+  } else if (action === "Approved"){
+    patch.approvedBy = myUid();
+    patch.approvedAt = serverTimestamp();
+  }
+  try{ await updateDoc(doc(db,col,id), patch); }
+  catch(e){ console.warn("approval log", e); }
+}
 /* Rebuild a series from the quotations that actually exist. */
 async function repairSeries(key){
   const a = seriesAudit().find(x=>x.key===key);
@@ -4261,8 +4327,19 @@ function closeModal(force){
 }
 function escClose(e){ if (e.key === "Escape") closeModal(); }
 
-function fieldHTML(col,f,d){
+function fieldHTML(col,f,d,isNew){
   if (f.type === "computed") return "";
+  if (f.system){
+    if (isNew) return "";   // nothing exists yet to show or type into
+    const domId = "f-"+f.k, locked = !isAdmin();
+    return `<div class="field">
+      <label for="${domId}">${esc(f.l)}</label>
+      <input id="${domId}" data-k="${f.k}" type="text" value="${esc(d?.[f.k]||"")}"${locked?" readonly":""}>
+      <span class="hint">${locked
+        ? "System-generated — only an administrator can change this."
+        : "Traces this record through the pipeline. Change with care."}</span>
+    </div>`;
+  }
   if (f.type === "deptnotes"){
     const dept = actingDept();
     const all = d?.deptNotes || {};
@@ -4341,7 +4418,7 @@ function openForm(col, id, preset){
       <button class="x" data-close aria-label="Close">×</button></div>
     <div class="modal-b">
       <div id="form-err" class="err hidden"></div>
-      <div class="fgrid">${S.fields.map(f=>fieldHTML(col,f,d)).join("")}</div>
+      <div class="fgrid">${S.fields.map(f=>fieldHTML(col,f,d,!id)).join("")}</div>
     </div>
     <div class="modal-f">
       ${id?`<button class="btn dgr" id="del">Delete</button>`:""}
@@ -5001,9 +5078,11 @@ function openCostingForm(id, preset){
     <div class="modal-b costing-form" id="co-wrap">
       <div id="form-err" class="err hidden"></div>
       <div class="fgrid">
-        ${d.controlNo ? `<div class="field"><label>Control No.</label>
-          <input value="${esc(d.controlNo)}" readonly>
-          <span class="hint">Traces back to the Canvass Summary and original Inquiry.</span></div>` : ""}
+        ${d.controlNo ? `<div class="field"><label for="co-control">Control No.</label>
+          <input id="co-control" value="${esc(d.controlNo)}"${isAdmin()?"":" readonly"}>
+          <span class="hint">${isAdmin()
+            ? "Traces this record through the pipeline. Change with care."
+            : "System-generated — only an administrator can change this."}</span></div>` : ""}
         <div class="field"><label for="co-acct">Customer</label>
           <select id="co-acct"><option value="">—</option>
             ${accts.map(a=>`<option value="${a.id}"${a.id===d.accountId?" selected":""}>${esc(a.name)}</option>`).join("")}</select></div>
@@ -5204,7 +5283,8 @@ function openCostingForm(id, preset){
     const ownerId = isManager() ? ($("#co-owner").value || myUid()) : (d.ownerId || myUid());
     const owner = state.users.get(ownerId);
     const payload = {
-      controlNo: d.controlNo || null, canvassId: d.canvassId || null,
+      controlNo: ($("#co-control")?.value.trim() || d.controlNo || null),
+      canvassId: d.canvassId || null,
       accountId: $("#co-acct").value || null, dealId: $("#co-deal").value || null,
       accountManagerId: state.data.accounts.get($("#co-acct").value)?.accountManagerId || null,
       ownerId, department: owner?.department || state.profile.department,
@@ -5271,7 +5351,11 @@ function openCostingDetail(id){
         <div class="r"><div class="k">Contact person</div><div class="v">${esc(d.supplierContact||"—")}</div></div>
         <div class="r"><div class="k">Purchase type</div><div class="v">${esc(d.purchaseType||"International")}${f.intl?` (${esc(costingCurrency(d))} @ ₱${costingRate(d)})`:""}</div></div>
         <div class="r"><div class="k">Owner</div><div class="v">${esc(userName(d.ownerId))}</div></div>
-        ${d.status==="Approved" ? `<div class="r"><div class="k">Approved by</div><div class="v">${esc(userName(d.approvedBy))} · ${fmtDate(d.approvedAt)}</div></div>` : ""}
+        ${Number(d.revision||0) ? `<div class="r"><div class="k">Revisions</div><div class="v">${Number(d.revision)}</div></div>` : ""}
+        ${d.status==="Approved" ? `<div class="r"><div class="k">Approved by</div><div class="v">${personCell(d.approvedBy)}
+          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(d.approvedAt)}</div></div></div>` : ""}
+        ${d.status==="Rejected" ? `<div class="r"><div class="k">Rejected by</div><div class="v">${personCell(d.rejectedBy)}
+          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(d.rejectedAt)}</div></div></div>` : ""}
       </div>
 
       <table class="items" style="margin-top:18px">
@@ -5307,6 +5391,7 @@ function openCostingDetail(id){
       </div>
       ${d.remarks ? `<div style="margin-top:16px"><div class="eyebrow">Remarks</div>
         <p style="font-size:13px;white-space:pre-wrap;margin:5px 0 0">${esc(d.remarks)}</p></div>` : ""}
+      ${approvalHistoryHTML(d)}
     </div>
     <div class="modal-f">
       ${d.status==="Approved" && canWrite(d) ? `<button class="btn" id="co-to-quote">Create Quotation</button>` : ""}
@@ -5361,8 +5446,10 @@ function openQuoteForm(id, preset){
             placeholder="Issued when you save">
           <span class="hint" id="q-no-hint"></span></div>
         ${q.controlNo ? `<div class="field"><label for="q-control">Control No.</label>
-          <input id="q-control" value="${esc(q.controlNo)}" readonly>
-          <span class="hint">Traces back through Costing, Canvass Summary and the original Inquiry.</span></div>` : ""}
+          <input id="q-control" value="${esc(q.controlNo)}"${isAdmin()?"":" readonly"}>
+          <span class="hint">${isAdmin()
+            ? "Traces this record through the pipeline. Change with care."
+            : "System-generated — only an administrator can change this."}</span></div>` : ""}
         <div class="field"><label for="q-status">Status</label>
           <select id="q-status">${["Draft","Sent","Viewed","Approved","Declined","Expired"].map(o=>opt(o,q.status||"Draft")).join("")}</select></div>
         <div class="field full"><label for="q-title">Subject <span class="req">*</span></label>
@@ -5590,7 +5677,8 @@ function openQuoteForm(id, preset){
       subtotal:t.sub, total:t.total, terms:$("#q-terms").value||null,
       ownerId, department: state.users.get(ownerId)?.department || state.profile.department,
       accountManagerId: state.data.accounts.get($("#q-acct").value)?.accountManagerId || null,
-      controlNo: q.controlNo || null, costingId: q.costingId || null,
+      controlNo: ($("#q-control")?.value.trim() || q.controlNo || null),
+      costingId: q.costingId || null,
       updatedAt: serverTimestamp()
     };
     $("#q-save").disabled = true;
@@ -5680,6 +5768,11 @@ function openQuoteDetail(id){
         <div class="r"><div class="k">Owner</div><div class="v">${esc(userName(q.ownerId))}</div></div>
         <div class="r"><div class="k">Issued</div><div class="v mono" style="font-size:13px">${fmtDate(q.issueDate)}</div></div>
         <div class="r"><div class="k">Valid until</div><div class="v mono" style="font-size:13px">${fmtDate(q.validUntil)}</div></div>
+        ${Number(q.revision||0) ? `<div class="r"><div class="k">Revisions</div><div class="v">${Number(q.revision)}</div></div>` : ""}
+        ${st==="Approved" ? `<div class="r"><div class="k">Approved by</div><div class="v">${personCell(q.approvedBy)}
+          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(q.approvedAt)}</div></div></div>` : ""}
+        ${st==="Declined" ? `<div class="r"><div class="k">Declined by</div><div class="v">${personCell(q.declinedBy)}
+          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(q.declinedAt)}</div></div></div>` : ""}
       </div>
       <table class="items" style="margin-top:18px">
         <thead><tr><th>Description</th><th style="text-align:right">Qty</th>
@@ -5699,6 +5792,7 @@ function openQuoteDetail(id){
       </div>
       ${q.terms?`<div style="margin-top:16px"><div class="eyebrow">Terms &amp; notes</div>
         <p style="font-size:13px;white-space:pre-wrap;margin:5px 0 0">${esc(q.terms)}</p></div>`:""}
+      ${approvalHistoryHTML(q)}
     </div>
     <div class="modal-f">
       <button class="btn" id="q-view">Preview document</button>
