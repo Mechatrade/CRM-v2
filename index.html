@@ -5163,6 +5163,7 @@ function openInquiryForm(id, preset){
     </div>
     <div class="modal-f">
       ${id?`<button class="btn dgr" id="iq-del">Delete</button>`:""}
+      <button class="btn" id="iq-preview" type="button">Preview document</button>
       <div class="spacer"></div>
       <button class="btn" data-close>Cancel</button>
       <button class="btn pri" id="iq-save">${id?"Save inquiry":"Create inquiry"}</button>
@@ -5279,6 +5280,22 @@ function openInquiryForm(id, preset){
     render();
   };
   render();
+
+  $("#iq-preview").onclick = ()=>{
+    openInquiryPreview({
+      ...d,
+      subject: $("#iq-subject").value,
+      relatedType: $("#iq-reltype").value, relatedId: $("#iq-relid").value || null,
+      contactId: $("#iq-contact").value || null,
+      source: $("#iq-source").value || null,
+      inquiryDate: $("#iq-date").value || null, status: $("#iq-status").value,
+      ownerId: (isManager() ? $("#iq-owner").value : d.ownerId) || myUid(),
+      items: items.filter(it=>it.desc || it.itemCode),
+      suppliers,
+      selectedSupplier,
+      notes: $("#iq-notes").value || null
+    });
+  };
 
   const del = document.querySelector("#iq-del");
   if (del) del.onclick = async ()=>{ if (await deleteRecord("inquiries", id)) closeModal(true); };
