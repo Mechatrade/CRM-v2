@@ -1389,6 +1389,12 @@ const COUNTRY_CURRENCY = {
 };
 const SUPPLIER_ORIGINS = Object.keys(COUNTRY_CURRENCY);
 function originCurrency(country){ return COUNTRY_CURRENCY[country] || "USD"; }
+/* Canvass sheet: a blank supplier price means "didn't quote this item",
+   distinct from an explicit ₱0 — used by the form, the read-only detail
+   view, and the printed document so all three agree on what counts as
+   quoted. */
+function isQuoted(raw){ return raw !== "" && raw !== null && raw !== undefined; }
+const NO_QUOTE_TAG = `<span style="color:var(--faint);font-style:italic;font-size:11.5px">No quote</span>`;
 /* Formats a figure in its own currency (CUR_SYM), unlike money() which
    always uses the org's base currency — for showing a foreign supplier's
    shipping cost etc. in the currency it was actually entered in. */
@@ -5085,14 +5091,14 @@ function itemRow(i, it={}){
    Costing. Suppliers are optional at save time: an inquiry can be logged
    with just its items, and suppliers/pricing added later via Edit. See
    proceedRecord()'s "inquiries" branch for the handoff to Costing. */
-function iqItemRow(l, supCount){
+function iqItemRow(l, idx, supCount){
   return `<tr data-id="${l._id}">
-    <td style="width:74px"><input data-f="itemCode" value="${esc(l.itemCode||"")}" placeholder="Code"></td>
+    <td style="width:44px;text-align:center" class="mono">${String(idx+1).padStart(2,"0")}</td>
     <td><input data-f="desc" value="${esc(l.desc||"")}" placeholder="Item description"></td>
     <td style="width:56px"><input data-f="uom" value="${esc(l.uom||"")}" placeholder="pc"></td>
     <td style="width:58px"><input data-f="qty" type="number" min="0" step="any" value="${esc(l.qty??1)}"></td>
     ${Array.from({length:supCount},(_,i)=>`
-      <td style="width:84px"><input data-f="cost${i}" type="number" min="0" step="any" value="${esc((l.costs||[])[i]??"")}"></td>
+      <td style="width:84px"><input data-f="cost${i}" type="number" min="0" step="any" value="${esc((l.costs||[])[i]??"")}" placeholder="No quote"></td>
       <td style="width:92px;text-align:right;font-family:var(--mono);font-size:12.5px" data-out="amt${i}">—</td>`).join("")}
     <td style="width:26px"><button class="x" data-del-line="${l._id}" title="Remove">×</button></td>
   </tr>`;
@@ -5224,12 +5230,15 @@ function openInquiryForm(id, preset){
       ${suppliers.map((s,i)=>`<th style="text-align:right" colspan="2">${esc(s.name||`Supplier ${i+1}`)}${s.purchaseType==="International"?` <span style="font-weight:400;color:var(--muted)">(${esc(s.currency||"USD")})</span>`:""}</th>`).join("")}
       <th></th>
     </tr>`;
-    $("#iq-items").innerHTML = items.map(it=>iqItemRow(it, suppliers.length)).join("");
+    $("#iq-items").innerHTML = items.map((it,idx)=>iqItemRow(it, idx, suppliers.length)).join("");
     $("#iq-items").querySelectorAll("tr[data-id]").forEach(tr=>{
       const line = items.find(x=>x._id === Number(tr.dataset.id));
       tr.querySelectorAll("[data-f]").forEach(inp=> inp.addEventListener("input", ()=>{
         const f = inp.dataset.f;
-        if (f.startsWith("cost")) line.costs[Number(f.slice(4))] = Number(inp.value||0);
+        // Blank stays blank (no quote) — it does not get coerced to 0, so a
+        // supplier that simply didn't price this item is distinguishable
+        // from one that quoted ₱0.
+        if (f.startsWith("cost")) line.costs[Number(f.slice(4))] = inp.value === "" ? "" : Number(inp.value);
         else line[f] = inp.type==="number" ? Number(inp.value||0) : inp.value;
         recalc();
       }));
@@ -5287,9 +5296,10 @@ function openInquiryForm(id, preset){
       const tr = document.querySelector(`#iq-items tr[data-id="${it._id}"]`);
       if (!tr) return;
       suppliers.forEach((s,i)=>{
-        const amt = Number(it.qty||0)*Number((it.costs||[])[i]||0);
+        const raw = (it.costs||[])[i];
         const out = tr.querySelector(`[data-out="amt${i}"]`);
-        if (out) out.textContent = amt ? money(amt) : "—";
+        if (!out) return;
+        out.innerHTML = isQuoted(raw) ? money(Number(it.qty||0)*Number(raw)) : NO_QUOTE_TAG;
       });
     });
     document.querySelectorAll("#iq-items-head th[colspan]").forEach((th,i)=>{
@@ -5316,13 +5326,28 @@ function openInquiryForm(id, preset){
     const expanded = card.classList.toggle("xwide");
     $("#iq-expand").textContent = expanded ? "⤡ Collapse" : "⤢ Expand";
   };
-  $("#iq-add").onclick = ()=>{ items.push({ _id: nextLineId++, itemCode:"", desc:"", uom:"", qty:1, costs: suppliers.map(()=>"") }); render(); };
+  $("#iq-add").onclick = ()=>{ items.push({ _id: nextLineId++, desc:"", uom:"", qty:1, costs: suppliers.map(()=>"") }); render(); };
   $("#iq-add-sup").onclick = ()=>{
     suppliers.push({ _id: nextSupId++, name:"", tel:"", contact:"", leadTime:"", shippingCost:"" });
     items.forEach(it=> it.costs.push(""));
     render();
   };
   render();
+
+  // Drops blank rows, then renumbers the code column 01, 02… by the order
+  // that remains — the code is never typed, only assigned by position.
+  // Costs pass through isQuoted() so a blank cell is stored as null (no
+  // quote) rather than being coerced to 0.
+  function finalizeItems(){
+    return items.filter(it=>(it.desc||"").trim()).map((it,idx)=>({
+      itemCode: String(idx+1).padStart(2,"0"),
+      desc: it.desc||null, uom: it.uom||null, qty: Number(it.qty||0)||null,
+      costs: suppliers.map((_,i)=>{
+        const raw = (it.costs||[])[i];
+        return isQuoted(raw) ? Number(raw) : null;
+      })
+    }));
+  }
 
   $("#iq-preview").onclick = ()=>{
     openInquiryPreview({
@@ -5333,7 +5358,7 @@ function openInquiryForm(id, preset){
       source: $("#iq-source").value || null,
       inquiryDate: $("#iq-date").value || null, status: $("#iq-status").value,
       ownerId: (isManager() ? $("#iq-owner").value : d.ownerId) || myUid(),
-      items: items.filter(it=>it.desc || it.itemCode),
+      items: finalizeItems(),
       suppliers,
       selectedSupplier,
       notes: $("#iq-notes").value || null
@@ -5347,10 +5372,7 @@ function openInquiryForm(id, preset){
     const box = $("#form-err");
     const subject = $("#iq-subject").value.trim();
     if (!subject){ box.textContent = "Subject is required."; box.classList.remove("hidden"); return; }
-    const items2 = items.filter(it=>it.desc || it.itemCode).map(it=>({
-      itemCode: it.itemCode||null, desc: it.desc||null, uom: it.uom||null, qty: Number(it.qty||0)||null,
-      costs: suppliers.map((_,i)=> Number((it.costs||[])[i]||0))
-    }));
+    const items2 = finalizeItems();
     if (!items2.length){ box.textContent = "Add at least one item."; box.classList.remove("hidden"); return; }
     const suppliers2 = suppliers.map(s=>{
       const intl = (s.purchaseType||"Local") === "International";
@@ -5444,9 +5466,11 @@ function openInquiryDetail(id){
           <td style="padding:7px 6px">${esc(it.uom||"—")}</td>
           <td class="num" style="padding:7px 6px">${it.qty??"—"}</td>
           ${suppliers.map((s,i)=>{
-            const c = Number((it.costs||[])[i]||0), amt = Number(it.qty||0)*c;
-            return `<td class="num" style="padding:7px 6px">${c?money(c):"—"}</td>
-              <td class="num" style="padding:7px 6px${d.selectedSupplier===i?`;font-weight:600;color:var(--accent)`:""}">${amt?money(amt):"—"}</td>`;
+            const raw = (it.costs||[])[i];
+            const q = isQuoted(raw);
+            const c = q ? Number(raw) : 0, amt = q ? Number(it.qty||0)*c : 0;
+            return `<td class="num" style="padding:7px 6px">${q?money(c):NO_QUOTE_TAG}</td>
+              <td class="num" style="padding:7px 6px${d.selectedSupplier===i?`;font-weight:600;color:var(--accent)`:""}">${q?money(amt):"—"}</td>`;
           }).join("")}
         </tr>`).join("") : `<tr><td colspan="${4+suppliers.length*2}" class="empty">No items logged.</td></tr>`}</tbody>
       </table>
@@ -6342,9 +6366,11 @@ function inquiryDocHTML(d){
         <td>${esc(it.uom||"—")}</td>
         <td class="c">${it.qty??"—"}</td>
         ${suppliers.map((s,i)=>{
-          const c = Number((it.costs||[])[i]||0), amt = Number(it.qty||0)*c;
+          const raw = (it.costs||[])[i];
+          const q = isQuoted(raw);
+          const c = q ? Number(raw) : 0, amt = q ? Number(it.qty||0)*c : 0;
           const win = d.selectedSupplier===i;
-          return `<td class="r">${c?money(c):"—"}</td><td class="r${win?" win":""}">${amt?money(amt):"—"}</td>`;
+          return `<td class="r">${q?money(c):`<span style="color:#8496A7;font-style:italic">No quote</span>`}</td><td class="r${win?" win":""}">${q?money(amt):"—"}</td>`;
         }).join("")}
       </tr>`).join("") : `<tr><td colspan="${4+suppliers.length*2}" style="text-align:center;color:#8496A7;padding:22px">
         Add line items to see them here.</td></tr>`}</tbody>
