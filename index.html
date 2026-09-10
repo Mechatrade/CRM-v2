@@ -2410,7 +2410,7 @@ function titleOf(col,d){
 /* A quiet note of any numbers waiting to be reused, and of real gaps —
    sequences that were skipped and never filled. */
 function seriesBadge(){
-  const keys = new Set(Array.from(state.counters.keys()));
+  const keys = new Set(Array.from(state.counters.keys()).filter(k=>k.startsWith(QUOTE_ROOT+"-")));
   rows("quotations").forEach(q=>{ const sr = seriesOf(q); if (sr) keys.add(sr.key); });
   let free = 0, gaps = 0;
   keys.forEach(k=>{
@@ -2429,7 +2429,7 @@ function seriesBadge(){
 /* Every series we know about, with what the counter says versus what the
    quotations on file actually show. */
 function seriesAudit(){
-  const keys = new Set(state.counters.keys());
+  const keys = new Set(Array.from(state.counters.keys()).filter(k=>k.startsWith(QUOTE_ROOT+"-")));
   rows("quotations").forEach(q=>{ const sr = seriesOf(q); if (sr) keys.add(sr.key); });
   return Array.from(keys).sort().map(key=>{
     const used = rows("quotations").map(seriesOf).filter(x=>x && x.key===key).map(x=>x.no).sort((a,b)=>a-b);
@@ -4390,14 +4390,24 @@ function openForm(col, id, preset){
    "MTISI-" quote-number counters, so the two never collide. Unlike quote
    numbers, these are never released for reuse: a gap here just means a
    record was deleted, which is fine for an internal tracking number. */
+function controlNoSeriesOf(cn){
+  const m = String(cn||"").match(/^(.*)-(\d+)$/);
+  return m ? { key:m[1], no:Number(m[2]) } : null;
+}
 async function nextControlNo(dept){
   const now = new Date();
   const key = `CN-${QUOTE_PREFIX[dept] || "ADM"}-${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+  // Self-heals if the counter ever drifted below what's already on an
+  // inquiry in this series (e.g. reset by hand) — never issues a number at
+  // or below the highest one already in use.
+  const used = rows("inquiries").map(i=>controlNoSeriesOf(i.controlNo)).filter(x=>x && x.key===key).map(x=>x.no);
+  const highestUsed = used.length ? Math.max(...used) : 0;
   let n = 1;
   await runTransaction(db, async tx=>{
     const cref = doc(db,"counters",key);
     const snap = await tx.get(cref);
-    n = Number(snap.exists() ? snap.data().next : 1) || 1;
+    const stored = Number(snap.exists() ? snap.data().next : 1) || 1;
+    n = Math.max(stored, highestUsed + 1);
     tx.set(cref, { next:n+1, updatedAt:serverTimestamp() }, { merge:true });
   });
   return `${key}-${String(n).padStart(5,"0")}`;
@@ -4442,10 +4452,18 @@ async function submitForm(col,id){
     if (["Won","Lost"].includes(vals.stage)) payload.closedAt = serverTimestamp();
   }
   // A new inquiry is where the chain starts, so it's the one place a control
-  // number is minted rather than carried over from an earlier stage.
+  // number is minted rather than carried over from an earlier stage. If it
+  // can't be issued, stop rather than silently saving a record with no
+  // number — this is the one field the whole pipeline traces by.
   if (col === "inquiries" && !id){
     try{ payload.controlNo = await nextControlNo(payload.department); }
-    catch(e){ console.warn("control number", e); }
+    catch(e){
+      console.warn("control number", e);
+      const box = $("#form-err");
+      box.textContent = "Couldn't issue a control number — check your connection and try again.";
+      box.classList.remove("hidden");
+      return;
+    }
   }
   $("#save").disabled = true;
   try{
