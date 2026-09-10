@@ -1789,11 +1789,6 @@ const NAV = [
     { id:"registry", label:"Customer registry", icon:"▦",
       count:()=>rows("accounts").filter(a=>!a.accountManagerId).length + orphanScan().length }
   ]},
-  { group:"Insight", items:[
-    { id:"performance", label:"Performance",  icon:"◭", depts:["Sales","Business Development"] },
-    { id:"intel",       label:"Market intel", icon:"◇", depts:["Business Development"] },
-    { id:"reports",     label:"Reports",     icon:"◫" }
-  ]},
   { group:"Administration", admin:true, items:[
     { id:"team",     label:"Team",     icon:"◑" },
     { id:"settings", label:"Settings", icon:"⚙" }
