@@ -1196,6 +1196,13 @@ const SCHEMAS = {
   },
 
   /* ---- Sales & Quotation Management additions ---- */
+  /* Customer / Lead Inquiry now carries its own canvass sheet — the item
+     table priced by up to three suppliers, matching the printed Canvass
+     Sheet template — so one record and one control number covers both
+     stages and hands straight off to Product Costing. Creation/editing goes
+     through a custom form (openInquiryForm), same pattern as Costing and
+     Quotations. This schema drives the list table, search and ref lookups
+     (e.g. costing.inquiryId). */
   inquiries: {
     label:"Inquiry", plural:"Customer / lead inquiries", icon:"◐", titleField:"subject",
     fields:[
@@ -1204,51 +1211,33 @@ const SCHEMAS = {
       { k:"relatedType",    l:"Inquiry from",     type:"select", opts:["Lead","Account"], def:"Lead", table:true },
       { k:"relatedId",      l:"Lead / Customer",  type:"ref",    refTo:"dynamic", table:true },
       { k:"contactId",      l:"Contact person",   type:"ref",    refTo:"contacts" },
+      { k:"dealId",         l:"Opportunity",      type:"ref",    refTo:"deals" },
       { k:"productInterest",l:"Product / interest", type:"text", table:true },
       { k:"source",         l:"Source",           type:"select", optsFrom:"sources" },
       { k:"inquiryDate",    l:"Inquiry date",     type:"date",   table:true },
+      { k:"itemsSummary",      l:"Items",             type:"text", table:true },
+      { k:"supplierSummary",   l:"Suppliers canvassed", type:"text", table:true },
+      { k:"selectedSupplierName", l:"Selected",       type:"text", table:true },
       { k:"status",         l:"Status",           type:"select", opts:["Open","Quoted","Closed - Won","Closed - Lost"], def:"Open", table:true },
       { k:"ownerId",        l:"Owner",            type:"ref",    refTo:"users", table:true, assignOnly:true },
+      { k:"notedBy",        l:"Noted by",         type:"ref",    refTo:"users" },
+      { k:"approvedBy",     l:"Approved by",      type:"ref",    refTo:"users" },
       { k:"notes",          l:"Notes",            type:"textarea", full:true }
     ]
   },
-  /* Canvass Summary is a comparison sheet: one set of items, priced by up
-     to three suppliers side by side, matching the printed Canvass Sheet
-     template (Doc. Control No., item table, three supplier columns,
-     Canvassed/Noted/Approved by). Creation/editing goes through a custom
-     form (openCanvassForm) — see canvassTotals() for the per-supplier math.
-     This schema drives the list table, search and ref lookups (e.g.
-     costing.canvassId). */
-  canvass: {
-    label:"Canvass", plural:"Canvass summary", icon:"⌗", titleField:"controlNo",
-    fields:[
-      { k:"controlNo",         l:"Control No.",       type:"text",   table:true, system:true },
-      { k:"canvassDate",       l:"Date",              type:"date",   table:true },
-      { k:"inquiryId",         l:"From inquiry",      type:"ref",    refTo:"inquiries" },
-      { k:"accountId",         l:"Customer",          type:"ref",    refTo:"accounts", table:true },
-      { k:"dealId",            l:"Opportunity",       type:"ref",    refTo:"deals" },
-      { k:"itemsSummary",      l:"Items",             type:"text",   table:true },
-      { k:"supplierSummary",   l:"Suppliers canvassed", type:"text", table:true },
-      { k:"selectedSupplierName", l:"Selected",       type:"text",   table:true },
-      { k:"status",            l:"Status",            type:"select", opts:["Draft","Reviewed","Selected","Rejected"], def:"Draft", table:true },
-      { k:"ownerId",           l:"Canvassed by",      type:"ref",    refTo:"users", table:true, assignOnly:true },
-      { k:"notedBy",           l:"Noted by",          type:"ref",    refTo:"users" },
-      { k:"approvedBy",        l:"Approved by",       type:"ref",    refTo:"users" },
-      { k:"remarks",           l:"Remarks",           type:"textarea", full:true }
-    ]
-  },
-  /* Costing sits between Canvass Summary and Quotation: a sheet built from
-     supplier pricing (possibly in a foreign currency), landed cost, and a
-     GP-based selling price, carried through an approval gate before it can
-     turn into a quotation. Creation/editing goes through a custom form
-     (openCostingForm) — see costingFigures() for the shared maths and
-     CUR_SYM for currency symbols. This schema drives the list table, search
-     and ref lookups from other records (e.g. quotations.costingId). */
+  /* Costing sits between Inquiry (which now carries its own canvass sheet)
+     and Quotation: a sheet built from supplier pricing (possibly in a
+     foreign currency), landed cost, and a GP-based selling price, carried
+     through an approval gate before it can turn into a quotation.
+     Creation/editing goes through a custom form (openCostingForm) — see
+     costingFigures() for the shared maths and CUR_SYM for currency symbols.
+     This schema drives the list table, search and ref lookups from other
+     records (e.g. quotations.costingId). */
   costing: {
     label:"Product costing", plural:"Product costing", icon:"⌬", titleField:"controlNo",
     fields:[
       { k:"controlNo",     l:"Control No.",      type:"text",   table:true },
-      { k:"canvassId",     l:"From canvass",     type:"ref",    refTo:"canvass" },
+      { k:"inquiryId",     l:"From inquiry",     type:"ref",    refTo:"inquiries" },
       { k:"accountId",     l:"Customer",         type:"ref",    refTo:"accounts", table:true },
       { k:"dealId",        l:"Opportunity",      type:"ref",    refTo:"deals" },
       { k:"supplierName",  l:"Supplier",         type:"text",   table:true },
@@ -1810,7 +1799,6 @@ function salesNavGroups(dept){
     { group:"Sales & Quotation Management", depts, items:[
       { id:"inquiries",  label:"Customer / Lead Inquiry", icon:"◐", depts,
         count:()=>rows("inquiries").filter(i=>i.status==="Open").length },
-      { id:"canvass",    label:"Canvass Summary", icon:"⌗", depts },
       { id:"costing",    label:"Product Costing", icon:"⌬", depts },
       { id:"quotations", label:"Quotations",      icon:"❑", depts, count:openQuoteCount },
       { id:"followups",  label:"Follow-ups",      icon:"↻", depts,
@@ -1977,7 +1965,7 @@ const NEW_FOR = { leads:"leads", pipeline:"deals", accounts:"accounts", contacts
                   intel:"intel", content:"content", assets:"assets",
                   prospects:"accounts", partners:"accounts", projects:"deals", engagement:"activities",
                   events:"campaigns", registry:"accounts",
-                  inquiries:"inquiries", canvass:"canvass", followups:"followups",
+                  inquiries:"inquiries", followups:"followups",
                   salesorders:"salesorders", products:"products", suppliers:"suppliers",
                   costing:"costing" };
 $("#new-btn").onclick = ()=>{
@@ -1998,7 +1986,7 @@ const TITLES = { dashboard:"Dashboard", leads:"Leads", pipeline:"Opportunities",
                  intel:"Market intelligence", forecast:"Pipeline forecast",
                  content:"Content plan", assets:"Marketing assets", events:"Events",
                  registry:"Customer registry",
-                 inquiries:"Customer / Lead Inquiry", canvass:"Canvass Summary",
+                 inquiries:"Customer / Lead Inquiry",
                  costing:"Product Costing", followups:"Follow-ups",
                  salesorders:"Sales Orders", products:"Products", suppliers:"Suppliers" };
 function render(){
@@ -2432,7 +2420,7 @@ function viewList(col){
           ${canWrite(d) ? `
             ${col==="leads" && d.status!=="Converted" ? `<button class="btn sm" data-convert="${d.id}">Convert</button> `:""}
             ${col==="activities" && d.status!=="Done" ? `<button class="btn sm" data-donebtn="${d.id}">Done</button> `:""}
-            ${["inquiries","canvass"].includes(col) ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
+            ${col==="inquiries" ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
             ${col==="costing" && d.status==="Approved" ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
             <button class="btn sm" data-edit="${col}:${d.id}">Edit</button>`
           : `<span class="pill" title="${esc(readOnlyNote(d))}">${esc(initials(userName(d.ownerId)))}</span>`}
@@ -3852,19 +3840,20 @@ function customerReportTab(){
 
 /* ---- Product Performance ---- */
 /* Quotations don't carry line items, so this reads product-level activity
-   from Canvass Summary and the Products catalog it feeds — how often an item
-   gets canvassed, its latest cost, and how many suppliers cover it. */
+   from each Inquiry's canvass sheet and the Products catalog it feeds —
+   how often an item gets canvassed, its latest cost, and how many
+   suppliers cover it. */
 function productPerformanceTab(){
-  const canvass = rows("canvass"), products = rows("products");
+  const inquiries = rows("inquiries"), products = rows("products");
   const byProduct = new Map();
-  canvass.forEach(c=>{
+  inquiries.forEach(c=>{
     (c.items||[]).forEach(it=>{
       const k = (it.desc||"").trim(); if (!k) return;
       const o = byProduct.get(k) || { n:0, suppliers:new Set(), lastCost:null, lastDate:null };
       o.n++;
       const costs = (it.costs||[]).map(Number).filter(n=>n>0);
       (c.suppliers||[]).forEach((s,i)=>{ if (s?.name && Number((it.costs||[])[i]||0)>0) o.suppliers.add(s.name.trim()); });
-      const d = toDate(c.canvassDate);
+      const d = toDate(c.inquiryDate);
       if (costs.length && (!o.lastDate || (d||0) > o.lastDate)){ o.lastDate = d||o.lastDate; o.lastCost = Math.min(...costs); }
       byProduct.set(k,o);
     });
@@ -3873,7 +3862,7 @@ function productPerformanceTab(){
   return `
   <div class="kpis">
     <div class="kpi"><div class="lbl">Products tracked</div><div class="val">${products.length}</div></div>
-    <div class="kpi"><div class="lbl">Canvass sheets</div><div class="val">${canvass.length}</div></div>
+    <div class="kpi"><div class="lbl">Canvass sheets</div><div class="val">${inquiries.filter(i=>(i.items||[]).length).length}</div></div>
   </div>
   <div class="card" style="margin-top:14px">
     <div class="card-h"><h3>Most canvassed products</h3><div class="spacer"></div><span class="eyebrow">suppliers · lowest cost seen</span></div>
@@ -3884,7 +3873,7 @@ function productPerformanceTab(){
         <td>${esc(p.name)}</td><td class="num">${p.n}</td><td class="num">${p.suppliers.size}</td>
         <td class="num">${p.lastCost?money(p.lastCost):"—"}</td>
         <td class="mono" style="font-size:12px">${p.lastDate?fmtDate(p.lastDate):"—"}</td>
-      </tr>`).join("")||`<tr><td colspan="5" class="empty">Log a few Canvass Summary entries to see product activity here.</td></tr>`}</tbody>
+      </tr>`).join("")||`<tr><td colspan="5" class="empty">Log a few inquiries with canvassing to see product activity here.</td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -4415,7 +4404,7 @@ function dynamicOptions(type, sel){
 function openForm(col, id, preset){
   if (col === "quotations") return openQuoteForm(id, preset);
   if (col === "costing") return openCostingForm(id, preset);
-  if (col === "canvass") return openCanvassForm(id, preset);
+  if (col === "inquiries") return openInquiryForm(id, preset);
   const S = SCHEMAS[col]; if(!S) return;
   if (id){
     const existing = state.data[col].get(id);
@@ -4537,20 +4526,6 @@ async function submitForm(col,id){
     payload.stageChangedAt = serverTimestamp();
     if (["Won","Lost"].includes(vals.stage)) payload.closedAt = serverTimestamp();
   }
-  // A new inquiry is where the chain starts, so it's the one place a control
-  // number is minted rather than carried over from an earlier stage. If it
-  // can't be issued, stop rather than silently saving a record with no
-  // number — this is the one field the whole pipeline traces by.
-  if (col === "inquiries" && !id){
-    try{ payload.controlNo = await nextControlNo(payload.department); }
-    catch(e){
-      console.warn("control number", e);
-      const box = $("#form-err");
-      box.textContent = "Couldn't issue a control number — check your connection and try again.";
-      box.classList.remove("hidden");
-      return;
-    }
-  }
   $("#save").disabled = true;
   try{
     if (id) await tracked(updateDoc(doc(db,col,id), payload));
@@ -4607,29 +4582,21 @@ function proceedRecord(col, id){
   const d = state.data[col]?.get(id);
   if (!d) return;
   if (col === "inquiries"){
-    openForm("canvass", null, {
-      controlNo: d.controlNo || null, inquiryId: id,
-      accountId: d.relatedType === "Account" ? d.relatedId : null,
-      items: [{ itemCode:"", desc: d.productInterest || "", uom:"", qty:1, costs:["","",""] }],
-      suppliers: [{name:"",tel:"",contact:""},{name:"",tel:"",contact:""},{name:"",tel:"",contact:""}],
-      ownerId: d.ownerId
-    });
-  } else if (col === "canvass"){
     const suppliers = Array.isArray(d.suppliers) ? d.suppliers : [];
     const named = suppliers.map((s,i)=>({s,i})).filter(x=>x.s?.name);
-    if (!named.length){ toast("Add at least one supplier to this sheet first.", true); return; }
+    if (!named.length){ toast("Add at least one supplier to this inquiry's canvass sheet first.", true); return; }
     let supIdx = d.selectedSupplier;
     if (supIdx == null || !suppliers[supIdx]?.name){
       supIdx = named[0].i;
-      toast(`No supplier marked as winner — using ${suppliers[supIdx].name}. Open the sheet to choose one instead.`, true);
+      toast(`No supplier marked as winner — using ${suppliers[supIdx].name}. Open the inquiry to choose one instead.`, true);
     }
     const sup = suppliers[supIdx] || {};
     const items = (Array.isArray(d.items) ? d.items : [])
       .filter(it=>it.desc || it.itemCode)
       .map(it=>({ desc: [it.itemCode,it.desc].filter(Boolean).join(" — "), qty: it.qty||1, price: (it.costs||[])[supIdx] || "" }));
     openForm("costing", null, {
-      controlNo: d.controlNo || null, canvassId: id,
-      accountId: d.accountId || null, dealId: d.dealId || null,
+      controlNo: d.controlNo || null, inquiryId: id,
+      accountId: d.relatedType === "Account" ? d.relatedId : null, dealId: d.dealId || null,
       supplierName: sup.name || "", supplierContact: sup.contact || "",
       items: items.length ? items : [{ desc:"", qty:1, price:"" }],
       ownerId: d.ownerId
@@ -4654,7 +4621,7 @@ function proceedRecord(col, id){
 function openDetail(col,id){
   if (col === "quotations") return openQuoteDetail(id);
   if (col === "costing") return openCostingDetail(id);
-  if (col === "canvass") return openCanvassDetail(id);
+  if (col === "inquiries") return openInquiryDetail(id);
   const S = SCHEMAS[col], d = state.data[col].get(id);
   if(!d) return;
   const related = rows("activities").filter(a=>a.relatedId===id)
@@ -4695,7 +4662,6 @@ function openDetail(col,id){
     </div>
     <div class="modal-f">
       ${col==="leads" && d.status!=="Converted" ? `<button class="btn" id="conv">Convert to deal</button>`:""}
-      ${col==="inquiries" && canWrite(d) ? `<button class="btn" id="to-canvass">Create Canvass Summary</button>`:""}
       <div class="spacer"></div>
       ${canWrite(d) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
       <button class="btn" data-close>Close</button>
@@ -4715,11 +4681,6 @@ function openDetail(col,id){
     openQuoteForm(null, { dealId:id, accountId:d.accountId, contactId:d.contactId,
                           title:d.title, ownerId:d.ownerId });
   };
-  // The Sales & Quotation Management pipeline: each stage hands its control
-  // number and identifying details forward to the next, so a quotation can
-  // always be traced back to the inquiry it started from.
-  const toCanvass = document.querySelector("#to-canvass");
-  if (toCanvass) toCanvass.onclick = ()=>{ closeModal(true); proceedRecord(col, id); };
   document.querySelectorAll("[data-quickdone]").forEach(b=> b.onclick = async ()=>{
     await markDone(b.dataset.quickdone); closeModal(true);
   });
@@ -4805,16 +4766,15 @@ function openConvert(leadId){
 const DEPENDENTS = {
   accounts: [["contacts","accountId"],["deals","accountId"],["quotations","accountId"],
              ["activities","relatedId"],["inquiries","relatedId"],["followups","relatedId"],
-             ["canvass","accountId"],["salesorders","accountId"],["costing","accountId"]],
+             ["salesorders","accountId"],["costing","accountId"]],
   contacts: [["deals","contactId"],["quotations","contactId"],["activities","relatedId"],
              ["inquiries","contactId"]],
-  deals:    [["quotations","dealId"],["activities","relatedId"],["canvass","dealId"],
-             ["salesorders","dealId"],["costing","dealId"]],
+  deals:    [["quotations","dealId"],["activities","relatedId"],
+             ["salesorders","dealId"],["costing","dealId"],["inquiries","dealId"]],
   campaigns:[["leads","campaignId"],["deals","campaignId"],["content","campaignId"]],
   leads:    [["activities","relatedId"],["inquiries","relatedId"],["followups","relatedId"]],
   quotations:[["followups","relatedId"],["salesorders","quotationId"]],
-  inquiries:[["canvass","inquiryId"]],
-  canvass:  [["costing","canvassId"]],
+  inquiries:[["costing","inquiryId"]],
   costing:  [["quotations","costingId"]]
 };
 function dependentsOf(col, id){
@@ -5086,12 +5046,12 @@ function itemRow(i, it={}){
    recalculation, multi-currency item lines, and fields that show or hide
    depending on whether the purchase is international. See costingFigures()
    for the maths this mirrors. */
-/* ---- Canvass Summary: item table priced by up to three suppliers ----
-   Mirrors the printed Canvass Sheet exactly — one set of items, three
-   supplier columns, a total per supplier so the cheapest is obvious, and a
-   "mark as winner" control that decides which supplier's pricing carries
-   forward into Product Costing. */
-function cvItemRow(l){
+/* ---- Customer / Lead Inquiry: now carries its own canvass sheet ----
+   Combines the inquiry header (who's asking, what for) with an item table
+   priced by up to three suppliers, matching the printed Canvass Sheet
+   template — one record, one control number, straight through to Product
+   Costing. See proceedRecord()'s "inquiries" branch for that handoff. */
+function iqItemRow(l){
   return `<tr data-id="${l._id}">
     <td style="width:74px"><input data-f="itemCode" value="${esc(l.itemCode||"")}" placeholder="Code"></td>
     <td><input data-f="desc" value="${esc(l.desc||"")}" placeholder="Item description"></td>
@@ -5103,56 +5063,67 @@ function cvItemRow(l){
     <td style="width:26px"><button class="x" data-del-line="${l._id}" title="Remove">×</button></td>
   </tr>`;
 }
-function openCanvassForm(id, preset){
+function openInquiryForm(id, preset){
   if (id){
-    const existing = state.data.canvass.get(id);
+    const existing = state.data.inquiries.get(id);
     if (existing && !canWrite(existing)) return toast(readOnlyNote(existing), true);
   }
-  const d = id ? { ...state.data.canvass.get(id) } : { ...(preset || {}) };
-  let items = Array.isArray(d.items) && d.items.length ? d.items.map(i=>({...i})) : [{itemCode:"",desc:"",uom:"",qty:1,costs:["","",""]}];
+  const d = id ? { ...state.data.inquiries.get(id) } : { ...(preset || {}) };
+  let items = Array.isArray(d.items) && d.items.length ? d.items.map(i=>({...i})) : [{itemCode:"",desc:d.productInterest||"",uom:"",qty:1,costs:["","",""]}];
   let nextLineId = 1;
   items = items.map(i=>({ ...i, _id: nextLineId++ }));
   const suppliers = Array.isArray(d.suppliers) && d.suppliers.length===3 ? d.suppliers : [{name:"",tel:"",contact:""},{name:"",tel:"",contact:""},{name:"",tel:"",contact:""}];
   let selectedSupplier = d.selectedSupplier ?? null;
-  const accts = rows("accounts").sort((a,b)=>(a.name||"").localeCompare(b.name||""));
-  const dls   = rows("deals").sort((a,b)=>(a.title||"").localeCompare(b.title||""));
+  const dls = rows("deals").sort((a,b)=>(a.title||"").localeCompare(b.title||""));
 
   modal(`
-    <div class="modal-h"><h3>${id?"Edit canvass summary":"New canvass summary"}</h3>
+    <div class="modal-h"><h3>${id?"Edit inquiry":"New inquiry"}</h3>
       <button class="x" data-close aria-label="Close">×</button></div>
     <div class="modal-b">
       <div id="form-err" class="err hidden"></div>
       <div class="fgrid">
-        ${d.controlNo ? `<div class="field"><label for="cv-control">Control No.</label>
-          <input id="cv-control" value="${esc(d.controlNo)}"${isAdmin()?"":" readonly"}>
+        ${d.controlNo ? `<div class="field"><label for="iq-control">Control No.</label>
+          <input id="iq-control" value="${esc(d.controlNo)}"${isAdmin()?"":" readonly"}>
           <span class="hint">${isAdmin()?"Traces this record through the pipeline. Change with care.":"System-generated — only an administrator can change this."}</span></div>` : ""}
-        <div class="field"><label for="cv-date">Date</label>
-          <input id="cv-date" type="date" value="${esc(d.canvassDate||todayISO())}"></div>
-        <div class="field"><label for="cv-acct">Customer</label>
-          <select id="cv-acct"><option value="">—</option>
-            ${accts.map(a=>`<option value="${a.id}"${a.id===d.accountId?" selected":""}>${esc(a.name)}</option>`).join("")}</select></div>
-        <div class="field"><label for="cv-deal">Opportunity</label>
-          <select id="cv-deal"><option value="">— None —</option>
+        <div class="field full"><label for="iq-subject">Subject <span class="req">*</span></label>
+          <input id="iq-subject" value="${esc(d.subject||"")}" placeholder="e.g. RFQ — ACB and MCCB units"></div>
+        <div class="field"><label for="iq-reltype">Inquiry from</label>
+          <select id="iq-reltype">${["Lead","Account"].map(o=>opt(o,d.relatedType||"Lead")).join("")}</select></div>
+        <div class="field"><label for="iq-relid">Lead / Customer</label>
+          <select id="iq-relid" data-dynamic="1">${dynamicOptions(d.relatedType||"Lead", d.relatedId)}</select></div>
+        <div class="field"><label for="iq-contact">Contact person</label>
+          <select id="iq-contact"><option value="">—</option>
+            ${rows("contacts").sort((a,b)=>(a.name||"").localeCompare(b.name||"")).map(c=>`<option value="${c.id}"${c.id===d.contactId?" selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
+        <div class="field"><label for="iq-deal">Opportunity</label>
+          <select id="iq-deal"><option value="">— None —</option>
             ${dls.map(x=>`<option value="${x.id}"${x.id===d.dealId?" selected":""}>${esc(x.title)}</option>`).join("")}</select></div>
-        <div class="field"><label for="cv-owner">Canvassed by</label>
-          <select id="cv-owner"${isManager()?"":" disabled"}>
+        <div class="field"><label for="iq-interest">Product / interest</label>
+          <input id="iq-interest" value="${esc(d.productInterest||"")}"></div>
+        <div class="field"><label for="iq-source">Source</label>
+          <select id="iq-source"><option value="">—</option>${(state.settings.sources||[]).map(o=>opt(o,d.source||"")).join("")}</select></div>
+        <div class="field"><label for="iq-date">Inquiry date</label>
+          <input id="iq-date" type="date" value="${esc(d.inquiryDate||todayISO())}"></div>
+        <div class="field"><label for="iq-status">Status</label>
+          <select id="iq-status">${["Open","Quoted","Closed - Won","Closed - Lost"].map(o=>opt(o,d.status||"Open")).join("")}</select></div>
+        <div class="field"><label for="iq-owner">Owner</label>
+          <select id="iq-owner"${isManager()?"":" disabled"}>
             ${isManager()?ownerOptions(d.ownerId||myUid()):`<option value="${myUid()}">${esc(state.profile.displayName||"You")}</option>`}</select></div>
-        <div class="field"><label for="cv-noted">Noted by</label>
-          <select id="cv-noted"><option value="">—</option>${ownerOptions(d.notedBy||"")}</select></div>
-        <div class="field"><label for="cv-approved">Approved by</label>
-          <select id="cv-approved"><option value="">—</option>${ownerOptions(d.approvedBy||"")}</select></div>
+        <div class="field"><label for="iq-noted">Noted by</label>
+          <select id="iq-noted"><option value="">—</option>${ownerOptions(d.notedBy||"")}</select></div>
+        <div class="field"><label for="iq-approved">Approved by</label>
+          <select id="iq-approved"><option value="">—</option>${ownerOptions(d.approvedBy||"")}</select></div>
       </div>
 
-      <div class="eyebrow" style="margin:20px 0 10px">Suppliers</div>
+      <div class="eyebrow" style="margin:20px 0 10px">Suppliers canvassed</div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
         ${[0,1,2].map(i=>`
           <div>
-            <div class="field"><label for="cv-sup${i}-name">Supplier ${i+1}</label>
-              <input id="cv-sup${i}-name" value="${esc(suppliers[i]?.name||"")}" placeholder="Supplier name"></div>
-            <div class="field" style="margin-top:9px"><label for="cv-sup${i}-tel">Tel. No.</label>
-              <input id="cv-sup${i}-tel" value="${esc(suppliers[i]?.tel||"")}"></div>
-            <div class="field" style="margin-top:9px"><label for="cv-sup${i}-contact">Contact person</label>
-              <input id="cv-sup${i}-contact" value="${esc(suppliers[i]?.contact||"")}"></div>
+            <div class="field"><label for="iq-sup${i}-name">Supplier ${i+1}</label>
+              <input id="iq-sup${i}-name" value="${esc(suppliers[i]?.name||"")}" placeholder="Supplier name"></div>
+            <div class="field" style="margin-top:9px"><label for="iq-sup${i}-tel">Tel. No.</label>
+              <input id="iq-sup${i}-tel" value="${esc(suppliers[i]?.tel||"")}"></div>
+            <div class="field" style="margin-top:9px"><label for="iq-sup${i}-contact">Contact person</label>
+              <input id="iq-sup${i}-contact" value="${esc(suppliers[i]?.contact||"")}"></div>
           </div>`).join("")}
       </div>
 
@@ -5160,36 +5131,40 @@ function openCanvassForm(id, preset){
       <table class="items">
         <thead><tr>
           <th>Code</th><th>Description</th><th>U/M</th><th>Qty</th>
-          ${[0,1,2].map(i=>`<th style="text-align:right" colspan="2" id="cv-th${i}">Supplier ${i+1}</th>`).join("")}
+          ${[0,1,2].map(i=>`<th style="text-align:right" colspan="2" id="iq-th${i}">Supplier ${i+1}</th>`).join("")}
           <th></th>
         </tr></thead>
-        <tbody id="cv-items">${items.map(i=>cvItemRow(i)).join("")}</tbody>
+        <tbody id="iq-items">${items.map(i=>iqItemRow(i)).join("")}</tbody>
       </table>
-      <button class="btn sm" id="cv-add" style="margin-top:8px">+ Add item</button>
+      <button class="btn sm" id="iq-add" style="margin-top:8px">+ Add item</button>
 
       <div class="eyebrow" style="margin:20px 0 9px">Totals &amp; winner</div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
         ${[0,1,2].map(i=>`
           <div class="card" style="padding:12px">
-            <div style="font-size:12px;color:var(--muted)" id="cv-th-name${i}">Supplier ${i+1}</div>
-            <div style="font-size:18px;font-weight:600;margin:4px 0 10px;font-family:var(--mono)" id="cv-total${i}">₱0</div>
-            <button class="btn sm" id="cv-win${i}" type="button" style="width:100%">Mark as winner</button>
+            <div style="font-size:12px;color:var(--muted)" id="iq-th-name${i}">Supplier ${i+1}</div>
+            <div style="font-size:18px;font-weight:600;margin:4px 0 10px;font-family:var(--mono)" id="iq-total${i}">₱0</div>
+            <button class="btn sm" id="iq-win${i}" type="button" style="width:100%">Mark as winner</button>
           </div>`).join("")}
       </div>
       <p class="note">Marking a winner decides whose pricing carries forward when you Proceed to Product Costing — you can change it any time before then.</p>
 
-      <div class="field full" style="margin-top:16px"><label for="cv-remarks">Remarks</label>
-        <textarea id="cv-remarks">${esc(d.remarks||"")}</textarea></div>
+      <div class="field full" style="margin-top:16px"><label for="iq-notes">Notes</label>
+        <textarea id="iq-notes">${esc(d.notes||"")}</textarea></div>
     </div>
     <div class="modal-f">
-      ${id?`<button class="btn dgr" id="cv-del">Delete</button>`:""}
+      ${id?`<button class="btn dgr" id="iq-del">Delete</button>`:""}
       <div class="spacer"></div>
       <button class="btn" data-close>Cancel</button>
-      <button class="btn pri" id="cv-save">${id?"Save canvass summary":"Create canvass summary"}</button>
+      <button class="btn pri" id="iq-save">${id?"Save inquiry":"Create inquiry"}</button>
     </div>`, true);
 
+  $("#iq-reltype").addEventListener("change", ()=>{
+    $("#iq-relid").innerHTML = dynamicOptions($("#iq-reltype").value, "");
+  });
+
   function collectItems(){
-    return Array.from(document.querySelectorAll("#cv-items tr[data-id]")).map(tr=>({
+    return Array.from(document.querySelectorAll("#iq-items tr[data-id]")).map(tr=>({
       itemCode: tr.querySelector('[data-f="itemCode"]').value,
       desc:     tr.querySelector('[data-f="desc"]').value,
       uom:      tr.querySelector('[data-f="uom"]').value,
@@ -5199,14 +5174,14 @@ function openCanvassForm(id, preset){
   }
   function collectSuppliers(){
     return [0,1,2].map(i=>({
-      name: $(`#cv-sup${i}-name`).value.trim(),
-      tel: $(`#cv-sup${i}-tel`).value.trim(),
-      contact: $(`#cv-sup${i}-contact`).value.trim()
+      name: $(`#iq-sup${i}-name`).value.trim(),
+      tel: $(`#iq-sup${i}-tel`).value.trim(),
+      contact: $(`#iq-sup${i}-contact`).value.trim()
     }));
   }
   function drawItems(){
-    const body = $("#cv-items");
-    body.innerHTML = items.map(i=>cvItemRow(i)).join("");
+    const body = $("#iq-items");
+    body.innerHTML = items.map(i=>iqItemRow(i)).join("");
     body.querySelectorAll("tr[data-id]").forEach(tr=>{
       const line = items.find(x=>x._id === Number(tr.dataset.id));
       tr.querySelectorAll("[data-f]").forEach(inp=>
@@ -5226,7 +5201,7 @@ function openCanvassForm(id, preset){
   function recalc(){
     const sup = collectSuppliers();
     const totals = [0,0,0];
-    document.querySelectorAll("#cv-items tr[data-id]").forEach(tr=>{
+    document.querySelectorAll("#iq-items tr[data-id]").forEach(tr=>{
       const qty = Number(tr.querySelector('[data-f="qty"]').value||0);
       [0,1,2].forEach(i=>{
         const cost = Number(tr.querySelector(`[data-f="cost${i}"]`).value||0);
@@ -5239,91 +5214,104 @@ function openCanvassForm(id, preset){
     const eligible = [0,1,2].filter(i=>sup[i].name && totals[i]>0);
     const lowest = eligible.length ? eligible.reduce((a,b)=>totals[b]<totals[a]?b:a) : null;
     [0,1,2].forEach(i=>{
-      $(`#cv-th-name${i}`).textContent = sup[i].name || `Supplier ${i+1}`;
-      $(`#cv-th${i}`).textContent = sup[i].name || `Supplier ${i+1}`;
-      $(`#cv-total${i}`).innerHTML = money(totals[i]) + (i===lowest ? ` <span class="pill accent" style="font-size:10px">Lowest</span>` : "");
-      const btn = $(`#cv-win${i}`);
+      $(`#iq-th-name${i}`).textContent = sup[i].name || `Supplier ${i+1}`;
+      $(`#iq-th${i}`).textContent = sup[i].name || `Supplier ${i+1}`;
+      $(`#iq-total${i}`).innerHTML = money(totals[i]) + (i===lowest ? ` <span class="pill accent" style="font-size:10px">Lowest</span>` : "");
+      const btn = $(`#iq-win${i}`);
       btn.classList.toggle("pri", selectedSupplier===i);
       btn.textContent = selectedSupplier===i ? "✓ Winner" : "Mark as winner";
     });
   }
 
-  $("#cv-add").onclick = ()=>{ items.push({ _id: nextLineId++, itemCode:"", desc:"", uom:"", qty:1, costs:["","",""] }); drawItems(); recalc(); };
+  $("#iq-add").onclick = ()=>{ items.push({ _id: nextLineId++, itemCode:"", desc:"", uom:"", qty:1, costs:["","",""] }); drawItems(); recalc(); };
   [0,1,2].forEach(i=>{
-    ["name","tel","contact"].forEach(k=> $(`#cv-sup${i}-${k}`).addEventListener("input", recalc));
-    $(`#cv-win${i}`).onclick = ()=>{ selectedSupplier = selectedSupplier===i ? null : i; recalc(); };
+    ["name","tel","contact"].forEach(k=> $(`#iq-sup${i}-${k}`).addEventListener("input", recalc));
+    $(`#iq-win${i}`).onclick = ()=>{ selectedSupplier = selectedSupplier===i ? null : i; recalc(); };
   });
   drawItems(); recalc();
 
-  const del = document.querySelector("#cv-del");
-  if (del) del.onclick = async ()=>{ if (await deleteRecord("canvass", id)) closeModal(true); };
+  const del = document.querySelector("#iq-del");
+  if (del) del.onclick = async ()=>{ if (await deleteRecord("inquiries", id)) closeModal(true); };
 
-  $("#cv-save").onclick = async ()=>{
+  $("#iq-save").onclick = async ()=>{
     const box = $("#form-err");
+    const subject = $("#iq-subject").value.trim();
+    if (!subject){ box.textContent = "Subject is required."; box.classList.remove("hidden"); return; }
     const items2 = collectItems().filter(i=>i.desc || i.itemCode);
     const suppliers2 = collectSuppliers();
     if (!items2.length){ box.textContent = "Add at least one item."; box.classList.remove("hidden"); return; }
     if (!suppliers2.some(s=>s.name)){ box.textContent = "Add at least one supplier."; box.classList.remove("hidden"); return; }
-    const ownerId = isManager() ? ($("#cv-owner").value || myUid()) : (d.ownerId || myUid());
+    const ownerId = isManager() ? ($("#iq-owner").value || myUid()) : (d.ownerId || myUid());
     const owner = state.users.get(ownerId);
     const namedCount = suppliers2.filter(s=>s.name).length;
     const payload = {
-      controlNo: ($("#cv-control")?.value.trim() || d.controlNo || null),
-      inquiryId: d.inquiryId || null,
-      accountId: $("#cv-acct").value || null, dealId: $("#cv-deal").value || null,
-      accountManagerId: state.data.accounts.get($("#cv-acct").value)?.accountManagerId || null,
-      canvassDate: $("#cv-date").value || null,
+      subject, relatedType: $("#iq-reltype").value, relatedId: $("#iq-relid").value || null,
+      contactId: $("#iq-contact").value || null, dealId: $("#iq-deal").value || null,
+      productInterest: $("#iq-interest").value.trim()||null, source: $("#iq-source").value||null,
+      inquiryDate: $("#iq-date").value || null, status: $("#iq-status").value,
       ownerId, department: owner?.department || state.profile.department,
-      notedBy: $("#cv-noted").value || null, approvedBy: $("#cv-approved").value || null,
+      notedBy: $("#iq-noted").value || null, approvedBy: $("#iq-approved").value || null,
       suppliers: suppliers2, items: items2,
       selectedSupplier: (selectedSupplier!=null && suppliers2[selectedSupplier]?.name) ? selectedSupplier : null,
       itemsSummary: items2[0].desc + (items2.length>1?` +${items2.length-1} more`:""),
       supplierSummary: suppliers2.filter(s=>s.name).map(s=>s.name).join(", ") || `${namedCount} suppliers`,
       selectedSupplierName: (selectedSupplier!=null && suppliers2[selectedSupplier]?.name) || null,
-      remarks: $("#cv-remarks").value||null,
+      notes: $("#iq-notes").value||null,
       updatedAt: serverTimestamp()
     };
-    if (!id) payload.status = "Draft";
-    $("#cv-save").disabled = true;
+    if (id) payload.controlNo = $("#iq-control")?.value.trim() || d.controlNo || null;
+    $("#iq-save").disabled = true;
     try{
-      if (id) await tracked(updateDoc(doc(db,"canvass",id), payload));
+      if (id) await tracked(updateDoc(doc(db,"inquiries",id), payload));
       else{
+        try{ payload.controlNo = await nextControlNo(payload.department); }
+        catch(e){
+          console.warn("control number", e);
+          $("#iq-save").disabled = false;
+          box.textContent = "Couldn't issue a control number — check your connection and try again.";
+          box.classList.remove("hidden");
+          return;
+        }
         payload.createdAt = serverTimestamp(); payload.createdBy = myUid();
-        await tracked(addDoc(collection(db,"canvass"), payload));
+        await tracked(addDoc(collection(db,"inquiries"), payload));
       }
-      await upsertCanvassCatalog(items2, suppliers2, payload.canvassDate);
-      closeModal(true); toast("Canvass summary " + (id?"saved":"created"));
+      await upsertCanvassCatalog(items2, suppliers2, payload.inquiryDate);
+      closeModal(true); toast("Inquiry " + (id?"saved":"created"));
     }catch(e){
-      $("#cv-save").disabled = false;
+      $("#iq-save").disabled = false;
       box.textContent = e.message; box.classList.remove("hidden");
     }
   };
 }
 
-/* Read-only view of a saved canvass sheet — the item grid and per-supplier
-   totals, laid out like the printed sheet, with the marked winner (if any)
-   highlighted and feeding into "Create Product Costing". */
-function openCanvassDetail(id){
-  const d = state.data.canvass.get(id); if(!d) return;
+/* Read-only view of a saved inquiry — its details plus the canvass grid and
+   per-supplier totals, with the marked winner highlighted and feeding into
+   "Create Product Costing". */
+function openInquiryDetail(id){
+  const d = state.data.inquiries.get(id); if(!d) return;
   const items = Array.isArray(d.items) ? d.items : [];
   const suppliers = Array.isArray(d.suppliers) && d.suppliers.length===3 ? d.suppliers : [{},{},{}];
   const totals = [0,1,2].map(i=> items.reduce((s,it)=> s + Number(it.qty||0)*Number((it.costs||[])[i]||0), 0));
   modal(`
     <div class="modal-h">
-      <div><div class="eyebrow">Canvass summary</div><h3>${esc(d.controlNo || "Canvass sheet")}</h3></div>
+      <div><div class="eyebrow">Customer / Lead Inquiry</div><h3>${esc(d.subject || d.controlNo || "Inquiry")}</h3></div>
       <button class="x" data-close aria-label="Close">×</button></div>
     <div class="modal-b">
       <div class="det">
         ${d.controlNo ? `<div class="r"><div class="k">Control No.</div><div class="v mono" style="font-size:13px">${esc(d.controlNo)}</div></div>` : ""}
-        <div class="r"><div class="k">Date</div><div class="v mono" style="font-size:13px">${fmtDate(d.canvassDate)}</div></div>
-        <div class="r"><div class="k">Customer</div><div class="v">${esc(recordTitle("accounts",d.accountId))}</div></div>
+        <div class="r"><div class="k">Inquiry from</div><div class="v">${esc(refLabel("dynamic",d.relatedId,d))} <span class="pill">${esc(d.relatedType||"Lead")}</span></div></div>
+        <div class="r"><div class="k">Contact person</div><div class="v">${esc(recordTitle("contacts",d.contactId))}</div></div>
+        <div class="r"><div class="k">Product / interest</div><div class="v">${esc(d.productInterest||"—")}</div></div>
+        <div class="r"><div class="k">Source</div><div class="v">${esc(d.source||"—")}</div></div>
+        <div class="r"><div class="k">Inquiry date</div><div class="v mono" style="font-size:13px">${fmtDate(d.inquiryDate)}</div></div>
         <div class="r"><div class="k">Status</div><div class="v">${pillFor("status",d.status)}</div></div>
-        <div class="r"><div class="k">Canvassed by</div><div class="v">${personCell(d.ownerId)}</div></div>
+        <div class="r"><div class="k">Owner</div><div class="v">${personCell(d.ownerId)}</div></div>
         ${d.notedBy ? `<div class="r"><div class="k">Noted by</div><div class="v">${personCell(d.notedBy)}</div></div>` : ""}
         ${d.approvedBy ? `<div class="r"><div class="k">Approved by</div><div class="v">${personCell(d.approvedBy)}</div></div>` : ""}
       </div>
 
-      <table class="items" style="margin-top:18px">
+      <div class="eyebrow" style="margin:18px 0 2px">Canvass sheet</div>
+      <table class="items" style="margin-top:8px">
         <thead><tr>
           <th>Code</th><th>Description</th><th>U/M</th><th style="text-align:right">Qty</th>
           ${suppliers.map((s,i)=>`<th style="text-align:right" colspan="2">${esc(s?.name||`Supplier ${i+1}`)}</th>`).join("")}
@@ -5351,20 +5339,20 @@ function openCanvassDetail(id){
             ${d.selectedSupplier===i ? `<span class="pill accent" style="margin-top:8px;display:inline-block">Winner</span>` : ""}
           </div>`).join("")}
       </div>
-      ${d.remarks ? `<div style="margin-top:16px"><div class="eyebrow">Remarks</div>
-        <p style="font-size:13px;white-space:pre-wrap;margin:5px 0 0">${esc(d.remarks)}</p></div>` : ""}
+      ${d.notes ? `<div style="margin-top:16px"><div class="eyebrow">Notes</div>
+        <p style="font-size:13px;white-space:pre-wrap;margin:5px 0 0">${esc(d.notes)}</p></div>` : ""}
     </div>
     <div class="modal-f">
-      ${canWrite(d) ? `<button class="btn" id="cv-to-costing">Create Product Costing</button>` : ""}
+      ${canWrite(d) ? `<button class="btn" id="iq-to-costing">Create Product Costing</button>` : ""}
       <div class="spacer"></div>
       ${canWrite(d) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
       <button class="btn" data-close>Close</button>
-      ${canWrite(d) ? `<button class="btn pri" id="cv-edit">Edit</button>` : ""}
+      ${canWrite(d) ? `<button class="btn pri" id="iq-edit">Edit</button>` : ""}
     </div>`, true);
-  const em = document.querySelector("#cv-edit");
-  if (em) em.onclick = ()=>{ closeModal(true); openCanvassForm(id); };
-  const tc = document.querySelector("#cv-to-costing");
-  if (tc) tc.onclick = ()=>{ closeModal(true); proceedRecord("canvass", id); };
+  const em = document.querySelector("#iq-edit");
+  if (em) em.onclick = ()=>{ closeModal(true); openInquiryForm(id); };
+  const tc = document.querySelector("#iq-to-costing");
+  if (tc) tc.onclick = ()=>{ closeModal(true); proceedRecord("inquiries", id); };
 }
 
 function openCostingForm(id, preset){
@@ -5593,7 +5581,7 @@ function openCostingForm(id, preset){
     const owner = state.users.get(ownerId);
     const payload = {
       controlNo: ($("#co-control")?.value.trim() || d.controlNo || null),
-      canvassId: d.canvassId || null,
+      inquiryId: d.inquiryId || null,
       accountId: $("#co-acct").value || null, dealId: $("#co-deal").value || null,
       accountManagerId: state.data.accounts.get($("#co-acct").value)?.accountManagerId || null,
       ownerId, department: owner?.department || state.profile.department,
