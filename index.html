@@ -1213,16 +1213,17 @@ const SCHEMAS = {
       { k:"relatedType",    l:"Inquiry from",     type:"select", opts:["Lead","Account"], def:"Lead", table:true },
       { k:"relatedId",      l:"Lead / Customer",  type:"ref",    refTo:"dynamic", table:true },
       { k:"contactId",      l:"Contact person",   type:"ref",    refTo:"contacts" },
-      { k:"dealId",         l:"Opportunity",      type:"ref",    refTo:"deals" },
       { k:"source",         l:"Source",           type:"select", optsFrom:"sources" },
       { k:"inquiryDate",    l:"Inquiry date",     type:"date",   table:true },
       { k:"itemsSummary",      l:"Items",             type:"text", table:true },
       { k:"supplierSummary",   l:"Suppliers canvassed", type:"text", table:true },
       { k:"selectedSupplierName", l:"Selected",       type:"text", table:true },
-      { k:"status",         l:"Status",           type:"select", opts:["Open","Quoted","Closed - Won","Closed - Lost"], def:"Open", table:true },
+      { k:"status",         l:"Status",           type:"select", opts:["Open","Noted","Approved","Quoted","Closed - Won","Closed - Lost"], def:"Open", table:true },
       { k:"ownerId",        l:"Owner",            type:"ref",    refTo:"users", table:true, assignOnly:true },
       { k:"notedBy",        l:"Noted by",         type:"ref",    refTo:"users" },
+      { k:"notedAt",        l:"Noted on",         type:"date" },
       { k:"approvedBy",     l:"Approved by",      type:"ref",    refTo:"users" },
+      { k:"approvedAt",     l:"Approved on",      type:"date" },
       { k:"notes",          l:"Notes",            type:"textarea", full:true }
     ]
   },
@@ -4097,6 +4098,10 @@ function wireView(){
           const q = state.data.quotations.get(id);
           if (q) await syncDealFromQuote({ ...q, id, status: el.value }, el.value);
         }
+        if (col === "inquiries"){
+          if (el.value === "Noted") await updateDoc(doc(db,col,id), { notedBy: myUid(), notedAt: serverTimestamp() });
+          if (el.value === "Approved") await updateDoc(doc(db,col,id), { approvedBy: myUid(), approvedAt: serverTimestamp() });
+        }
       }catch(e){
         if (prev) el.value = prev;
         toast(e.code === "permission-denied" ? "You can't change this one" : e.message, true);
@@ -4597,8 +4602,9 @@ function proceedRecord(col, id){
       .map(it=>({ desc: [it.itemCode,it.desc].filter(Boolean).join(" — "), qty: it.qty||1, price: (it.costs||[])[supIdx] || "" }));
     openForm("costing", null, {
       controlNo: d.controlNo || null, inquiryId: id,
-      accountId: d.relatedType === "Account" ? d.relatedId : null, dealId: d.dealId || null,
+      accountId: d.relatedType === "Account" ? d.relatedId : null,
       supplierName: sup.name || "", supplierContact: sup.contact || "",
+      shippingCost: sup.shippingCost || null,
       items: items.length ? items : [{ desc:"", qty:1, price:"" }],
       ownerId: d.ownerId
     });
@@ -4771,7 +4777,7 @@ const DEPENDENTS = {
   contacts: [["deals","contactId"],["quotations","contactId"],["activities","relatedId"],
              ["inquiries","contactId"]],
   deals:    [["quotations","dealId"],["activities","relatedId"],
-             ["salesorders","dealId"],["costing","dealId"],["inquiries","dealId"]],
+             ["salesorders","dealId"],["costing","dealId"]],
   campaigns:[["leads","campaignId"],["deals","campaignId"],["content","campaignId"]],
   leads:    [["activities","relatedId"],["inquiries","relatedId"],["followups","relatedId"]],
   quotations:[["followups","relatedId"],["salesorders","quotationId"]],
@@ -5052,17 +5058,39 @@ function itemRow(i, it={}){
    priced by up to three suppliers, matching the printed Canvass Sheet
    template — one record, one control number, straight through to Product
    Costing. See proceedRecord()'s "inquiries" branch for that handoff. */
-function iqItemRow(l){
+/* ---- Customer / Lead Inquiry: now carries its own canvass sheet ----
+   Combines the inquiry header (who's asking, what for) with an item table
+   priced by any number of suppliers, matching the printed Canvass Sheet
+   template — one record, one control number, straight through to Product
+   Costing. Suppliers are optional at save time: an inquiry can be logged
+   with just its items, and suppliers/pricing added later via Edit. See
+   proceedRecord()'s "inquiries" branch for the handoff to Costing. */
+function iqItemRow(l, supCount){
   return `<tr data-id="${l._id}">
     <td style="width:74px"><input data-f="itemCode" value="${esc(l.itemCode||"")}" placeholder="Code"></td>
     <td><input data-f="desc" value="${esc(l.desc||"")}" placeholder="Item description"></td>
     <td style="width:56px"><input data-f="uom" value="${esc(l.uom||"")}" placeholder="pc"></td>
     <td style="width:58px"><input data-f="qty" type="number" min="0" step="any" value="${esc(l.qty??1)}"></td>
-    ${[0,1,2].map(i=>`
+    ${Array.from({length:supCount},(_,i)=>`
       <td style="width:84px"><input data-f="cost${i}" type="number" min="0" step="any" value="${esc((l.costs||[])[i]??"")}"></td>
       <td style="width:92px;text-align:right;font-family:var(--mono);font-size:12.5px" data-out="amt${i}">—</td>`).join("")}
     <td style="width:26px"><button class="x" data-del-line="${l._id}" title="Remove">×</button></td>
   </tr>`;
+}
+function iqSupplierBlock(s, idx){
+  return `<div class="card" data-sup="${s._id}" style="padding:12px;position:relative">
+    <button class="x" data-del-sup="${s._id}" title="Remove supplier" style="position:absolute;top:8px;right:8px">×</button>
+    <div class="field"><label>Supplier ${idx+1}</label>
+      <input data-sf="name" value="${esc(s.name||"")}" placeholder="Supplier name"></div>
+    <div class="field" style="margin-top:9px"><label>Tel. No.</label>
+      <input data-sf="tel" value="${esc(s.tel||"")}"></div>
+    <div class="field" style="margin-top:9px"><label>Contact person</label>
+      <input data-sf="contact" value="${esc(s.contact||"")}"></div>
+    <div class="field" style="margin-top:9px"><label>Lead time</label>
+      <input data-sf="leadTime" value="${esc(s.leadTime||"")}" placeholder="e.g. 2 weeks"></div>
+    <div class="field" style="margin-top:9px"><label>Shipping cost</label>
+      <input data-sf="shippingCost" type="number" min="0" step="any" value="${esc(s.shippingCost??"")}"></div>
+  </div>`;
 }
 function openInquiryForm(id, preset){
   if (id){
@@ -5070,12 +5098,17 @@ function openInquiryForm(id, preset){
     if (existing && !canWrite(existing)) return toast(readOnlyNote(existing), true);
   }
   const d = id ? { ...state.data.inquiries.get(id) } : { ...(preset || {}) };
-  let items = Array.isArray(d.items) && d.items.length ? d.items.map(i=>({...i})) : [{itemCode:"",desc:"",uom:"",qty:1,costs:["","",""]}];
-  let nextLineId = 1;
+  let nextLineId = 1, nextSupId = 1;
+  let items = Array.isArray(d.items) && d.items.length ? d.items.map(i=>({...i})) : [{itemCode:"",desc:"",uom:"",qty:1,costs:[]}];
   items = items.map(i=>({ ...i, _id: nextLineId++ }));
-  const suppliers = Array.isArray(d.suppliers) && d.suppliers.length===3 ? d.suppliers : [{name:"",tel:"",contact:""},{name:"",tel:"",contact:""},{name:"",tel:"",contact:""}];
+  let suppliers = Array.isArray(d.suppliers) ? d.suppliers.map(s=>({...s}))
+                : (id ? [] : [0,1,2].map(()=>({name:"",tel:"",contact:"",leadTime:"",shippingCost:""})));
+  suppliers = suppliers.map(s=>({ ...s, _id: nextSupId++ }));
+  items.forEach(it=>{
+    const c = Array.isArray(it.costs) ? it.costs : [];
+    it.costs = suppliers.map((_,i)=> c[i] ?? "");
+  });
   let selectedSupplier = d.selectedSupplier ?? null;
-  const dls = rows("deals").sort((a,b)=>(a.title||"").localeCompare(b.title||""));
 
   modal(`
     <div class="modal-h"><h3>${id?"Edit inquiry":"New inquiry"}</h3>
@@ -5083,6 +5116,8 @@ function openInquiryForm(id, preset){
       <button class="x" data-close aria-label="Close">×</button></div>
     <div class="modal-b">
       <div id="form-err" class="err hidden"></div>
+
+      <div class="eyebrow" style="margin-bottom:10px">Customer information</div>
       <div class="fgrid">
         ${d.controlNo ? `<div class="field"><label for="iq-control">Control No.</label>
           <input id="iq-control" value="${esc(d.controlNo)}"${isAdmin()?"":" readonly"}>
@@ -5094,63 +5129,37 @@ function openInquiryForm(id, preset){
         <div class="field"><label for="iq-relid">Lead / Customer</label>
           <select id="iq-relid" data-dynamic="1">${dynamicOptions(d.relatedType||"Lead", d.relatedId)}</select></div>
         <div class="field"><label for="iq-contact">Contact person</label>
-          <select id="iq-contact"><option value="">—</option>
-            ${rows("contacts").sort((a,b)=>(a.name||"").localeCompare(b.name||"")).map(c=>`<option value="${c.id}"${c.id===d.contactId?" selected":""}>${esc(c.name)}</option>`).join("")}</select></div>
-        <div class="field"><label for="iq-deal">Opportunity</label>
-          <select id="iq-deal"><option value="">— None —</option>
-            ${dls.map(x=>`<option value="${x.id}"${x.id===d.dealId?" selected":""}>${esc(x.title)}</option>`).join("")}</select></div>
+          <select id="iq-contact"><option value="">—</option></select>
+          <span class="hint">Auto-filtered to the selected customer's contacts.</span></div>
         <div class="field"><label for="iq-source">Source</label>
           <select id="iq-source"><option value="">—</option>${(state.settings.sources||[]).map(o=>opt(o,d.source||"")).join("")}</select></div>
         <div class="field"><label for="iq-date">Inquiry date</label>
           <input id="iq-date" type="date" value="${esc(d.inquiryDate||todayISO())}"></div>
         <div class="field"><label for="iq-status">Status</label>
-          <select id="iq-status">${["Open","Quoted","Closed - Won","Closed - Lost"].map(o=>opt(o,d.status||"Open")).join("")}</select></div>
+          <select id="iq-status">${["Open","Noted","Approved","Quoted","Closed - Won","Closed - Lost"].map(o=>opt(o,d.status||"Open")).join("")}</select></div>
         <div class="field"><label for="iq-owner">Owner</label>
           <select id="iq-owner"${isManager()?"":" disabled"}>
             ${isManager()?ownerOptions(d.ownerId||myUid()):`<option value="${myUid()}">${esc(state.profile.displayName||"You")}</option>`}</select></div>
-        <div class="field"><label for="iq-noted">Noted by</label>
-          <select id="iq-noted"><option value="">—</option>${ownerOptions(d.notedBy||"")}</select></div>
-        <div class="field"><label for="iq-approved">Approved by</label>
-          <select id="iq-approved"><option value="">—</option>${ownerOptions(d.approvedBy||"")}</select></div>
       </div>
 
-      <div class="eyebrow" style="margin:20px 0 10px">Suppliers canvassed</div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
-        ${[0,1,2].map(i=>`
-          <div>
-            <div class="field"><label for="iq-sup${i}-name">Supplier ${i+1}</label>
-              <input id="iq-sup${i}-name" value="${esc(suppliers[i]?.name||"")}" placeholder="Supplier name"></div>
-            <div class="field" style="margin-top:9px"><label for="iq-sup${i}-tel">Tel. No.</label>
-              <input id="iq-sup${i}-tel" value="${esc(suppliers[i]?.tel||"")}"></div>
-            <div class="field" style="margin-top:9px"><label for="iq-sup${i}-contact">Contact person</label>
-              <input id="iq-sup${i}-contact" value="${esc(suppliers[i]?.contact||"")}"></div>
-          </div>`).join("")}
-      </div>
-
-      <div class="eyebrow" style="margin:20px 0 2px">Items</div>
+      <div class="eyebrow" style="margin:20px 0 2px">Item list inquiry</div>
       <table class="items">
-        <thead><tr>
-          <th>Code</th><th>Description</th><th>U/M</th><th>Qty</th>
-          ${[0,1,2].map(i=>`<th style="text-align:right" colspan="2" id="iq-th${i}">Supplier ${i+1}</th>`).join("")}
-          <th></th>
-        </tr></thead>
-        <tbody id="iq-items">${items.map(i=>iqItemRow(i)).join("")}</tbody>
+        <thead id="iq-items-head"></thead>
+        <tbody id="iq-items"></tbody>
       </table>
       <button class="btn sm" id="iq-add" style="margin-top:8px">+ Add item</button>
 
+      <div class="eyebrow" style="margin:20px 0 10px">Supplier's information</div>
+      <div id="iq-suppliers" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px"></div>
+      <button class="btn sm" id="iq-add-sup" style="margin-top:10px">+ Add supplier</button>
+      <p class="note">Suppliers are optional — you can log this inquiry with just its items and add suppliers later.</p>
+
       <div class="eyebrow" style="margin:20px 0 9px">Totals &amp; winner</div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
-        ${[0,1,2].map(i=>`
-          <div class="card" style="padding:12px">
-            <div style="font-size:12px;color:var(--muted)" id="iq-th-name${i}">Supplier ${i+1}</div>
-            <div style="font-size:18px;font-weight:600;margin:4px 0 10px;font-family:var(--mono)" id="iq-total${i}">₱0</div>
-            <button class="btn sm" id="iq-win${i}" type="button" style="width:100%">Mark as winner</button>
-          </div>`).join("")}
-      </div>
+      <div id="iq-totals" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px"></div>
       <p class="note">Marking a winner decides whose pricing carries forward when you Proceed to Product Costing — you can change it any time before then.</p>
 
-      <div class="field full" style="margin-top:16px"><label for="iq-notes">Notes</label>
-        <textarea id="iq-notes">${esc(d.notes||"")}</textarea></div>
+      <div class="eyebrow" style="margin:20px 0 2px">Notes</div>
+      <div class="field full"><textarea id="iq-notes">${esc(d.notes||"")}</textarea></div>
     </div>
     <div class="modal-f">
       ${id?`<button class="btn dgr" id="iq-del">Delete</button>`:""}
@@ -5159,65 +5168,100 @@ function openInquiryForm(id, preset){
       <button class="btn pri" id="iq-save">${id?"Save inquiry":"Create inquiry"}</button>
     </div>`, true);
 
+  function refreshContactOptions(){
+    const type = $("#iq-reltype").value, relId = $("#iq-relid").value;
+    let list = rows("contacts");
+    if (type === "Account" && relId) list = list.filter(c=>c.accountId===relId);
+    list = list.sort((a,b)=> recordTitle("contacts",a.id).localeCompare(recordTitle("contacts",b.id)));
+    const cur = $("#iq-contact").value || d.contactId || "";
+    $("#iq-contact").innerHTML = `<option value="">—</option>` +
+      list.map(c=>`<option value="${c.id}"${c.id===cur?" selected":""}>${esc(recordTitle("contacts",c.id))}</option>`).join("");
+    if (type === "Account" && list.length === 1 && !cur) $("#iq-contact").value = list[0].id;
+  }
   $("#iq-reltype").addEventListener("change", ()=>{
     $("#iq-relid").innerHTML = dynamicOptions($("#iq-reltype").value, "");
+    refreshContactOptions();
   });
+  $("#iq-relid").addEventListener("change", refreshContactOptions);
+  refreshContactOptions();
 
-  function collectItems(){
-    return Array.from(document.querySelectorAll("#iq-items tr[data-id]")).map(tr=>({
-      itemCode: tr.querySelector('[data-f="itemCode"]').value,
-      desc:     tr.querySelector('[data-f="desc"]').value,
-      uom:      tr.querySelector('[data-f="uom"]').value,
-      qty:      Number(tr.querySelector('[data-f="qty"]').value||0),
-      costs:    [0,1,2].map(i=> Number(tr.querySelector(`[data-f="cost${i}"]`)?.value||0))
-    }));
+  function computeTotals(){
+    return suppliers.map((s,i)=> items.reduce((sum,it)=> sum + Number(it.qty||0)*Number((it.costs||[])[i]||0), 0) + Number(s.shippingCost||0));
   }
-  function collectSuppliers(){
-    return [0,1,2].map(i=>({
-      name: $(`#iq-sup${i}-name`).value.trim(),
-      tel: $(`#iq-sup${i}-tel`).value.trim(),
-      contact: $(`#iq-sup${i}-contact`).value.trim()
-    }));
-  }
-  function drawItems(){
-    const body = $("#iq-items");
-    body.innerHTML = items.map(i=>iqItemRow(i)).join("");
-    body.querySelectorAll("tr[data-id]").forEach(tr=>{
+  function render(){
+    $("#iq-items-head").innerHTML = `<tr>
+      <th>Code</th><th>Description</th><th>U/M</th><th>Qty</th>
+      ${suppliers.map((s,i)=>`<th style="text-align:right" colspan="2">${esc(s.name||`Supplier ${i+1}`)}</th>`).join("")}
+      <th></th>
+    </tr>`;
+    $("#iq-items").innerHTML = items.map(it=>iqItemRow(it, suppliers.length)).join("");
+    $("#iq-items").querySelectorAll("tr[data-id]").forEach(tr=>{
       const line = items.find(x=>x._id === Number(tr.dataset.id));
-      tr.querySelectorAll("[data-f]").forEach(inp=>
-        inp.addEventListener("input", ()=>{
-          const f = inp.dataset.f;
-          if (f.startsWith("cost")) line.costs[Number(f.slice(4))] = Number(inp.value||0);
-          else line[f] = inp.type==="number" ? Number(inp.value||0) : inp.value;
-          recalc();
-        }));
+      tr.querySelectorAll("[data-f]").forEach(inp=> inp.addEventListener("input", ()=>{
+        const f = inp.dataset.f;
+        if (f.startsWith("cost")) line.costs[Number(f.slice(4))] = Number(inp.value||0);
+        else line[f] = inp.type==="number" ? Number(inp.value||0) : inp.value;
+        recalc();
+      }));
+      const delBtn = tr.querySelector("[data-del-line]");
+      delBtn.onclick = ()=>{ if (items.length<=1) return; items = items.filter(x=>x._id!==line._id); render(); };
     });
-    body.querySelectorAll("[data-del-line]").forEach(b=> b.onclick = ()=>{
-      if (items.length <= 1) return;
-      items = items.filter(x=>x._id !== Number(b.dataset.delLine));
-      drawItems(); recalc();
+
+    $("#iq-suppliers").innerHTML = suppliers.map((s,i)=>iqSupplierBlock(s,i)).join("");
+    $("#iq-suppliers").querySelectorAll("[data-sup]").forEach(block=>{
+      const sid = Number(block.dataset.sup);
+      const s = suppliers.find(x=>x._id===sid);
+      block.querySelectorAll("[data-sf]").forEach(inp=> inp.addEventListener("input", ()=>{
+        s[inp.dataset.sf] = inp.type==="number" ? Number(inp.value||0) : inp.value;
+        recalc();
+      }));
+      block.querySelector("[data-del-sup]").onclick = ()=>{
+        const idx = suppliers.findIndex(x=>x._id===sid);
+        if (idx<0) return;
+        suppliers.splice(idx,1);
+        items.forEach(it=> it.costs.splice(idx,1));
+        if (selectedSupplier===idx) selectedSupplier = null;
+        else if (selectedSupplier!=null && selectedSupplier>idx) selectedSupplier--;
+        render();
+      };
     });
+
+    $("#iq-totals").innerHTML = suppliers.map((s,i)=>`
+      <div class="card" style="padding:12px" data-total="${i}">
+        <div style="font-size:12px;color:var(--muted)" data-tname>${esc(s.name||`Supplier ${i+1}`)}</div>
+        <div style="font-size:18px;font-weight:600;margin:4px 0 10px;font-family:var(--mono)" data-tval>₱0</div>
+        <button class="btn sm" data-win="${i}" type="button" style="width:100%">Mark as winner</button>
+      </div>`).join("");
+    $("#iq-totals").querySelectorAll("[data-win]").forEach(btn=> btn.onclick = ()=>{
+      const i = Number(btn.dataset.win);
+      selectedSupplier = selectedSupplier===i ? null : i;
+      recalc();
+    });
+
+    recalc();
   }
   function recalc(){
-    const sup = collectSuppliers();
-    const totals = [0,0,0];
-    document.querySelectorAll("#iq-items tr[data-id]").forEach(tr=>{
-      const qty = Number(tr.querySelector('[data-f="qty"]').value||0);
-      [0,1,2].forEach(i=>{
-        const cost = Number(tr.querySelector(`[data-f="cost${i}"]`).value||0);
-        const amt = qty*cost;
-        totals[i] += amt;
+    items.forEach(it=>{
+      const tr = document.querySelector(`#iq-items tr[data-id="${it._id}"]`);
+      if (!tr) return;
+      suppliers.forEach((s,i)=>{
+        const amt = Number(it.qty||0)*Number((it.costs||[])[i]||0);
         const out = tr.querySelector(`[data-out="amt${i}"]`);
         if (out) out.textContent = amt ? money(amt) : "—";
       });
     });
-    const eligible = [0,1,2].filter(i=>sup[i].name && totals[i]>0);
-    const lowest = eligible.length ? eligible.reduce((a,b)=>totals[b]<totals[a]?b:a) : null;
-    [0,1,2].forEach(i=>{
-      $(`#iq-th-name${i}`).textContent = sup[i].name || `Supplier ${i+1}`;
-      $(`#iq-th${i}`).textContent = sup[i].name || `Supplier ${i+1}`;
-      $(`#iq-total${i}`).innerHTML = money(totals[i]) + (i===lowest ? ` <span class="pill accent" style="font-size:10px">Lowest</span>` : "");
-      const btn = $(`#iq-win${i}`);
+    document.querySelectorAll("#iq-items-head th[colspan]").forEach((th,i)=>{
+      th.textContent = suppliers[i]?.name || `Supplier ${i+1}`;
+    });
+    const totals = computeTotals();
+    const eligible = suppliers.map((s,i)=>i).filter(i=>suppliers[i].name && totals[i]>0);
+    const lowest = eligible.length ? eligible.reduce((a,b)=> totals[b]<totals[a]?b:a) : null;
+    suppliers.forEach((s,i)=>{
+      const card = document.querySelector(`#iq-totals [data-total="${i}"]`);
+      if (!card) return;
+      card.querySelector("[data-tname]").textContent = s.name || `Supplier ${i+1}`;
+      card.querySelector("[data-tval]").innerHTML = money(totals[i]) + (i===lowest ? ` <span class="pill accent" style="font-size:10px">Lowest</span>` : "");
+      const btn = card.querySelector("[data-win]");
       btn.classList.toggle("pri", selectedSupplier===i);
       btn.textContent = selectedSupplier===i ? "✓ Winner" : "Mark as winner";
     });
@@ -5228,12 +5272,13 @@ function openInquiryForm(id, preset){
     const expanded = card.classList.toggle("xwide");
     $("#iq-expand").textContent = expanded ? "⤡ Collapse" : "⤢ Expand";
   };
-  $("#iq-add").onclick = ()=>{ items.push({ _id: nextLineId++, itemCode:"", desc:"", uom:"", qty:1, costs:["","",""] }); drawItems(); recalc(); };
-  [0,1,2].forEach(i=>{
-    ["name","tel","contact"].forEach(k=> $(`#iq-sup${i}-${k}`).addEventListener("input", recalc));
-    $(`#iq-win${i}`).onclick = ()=>{ selectedSupplier = selectedSupplier===i ? null : i; recalc(); };
-  });
-  drawItems(); recalc();
+  $("#iq-add").onclick = ()=>{ items.push({ _id: nextLineId++, itemCode:"", desc:"", uom:"", qty:1, costs: suppliers.map(()=>"") }); render(); };
+  $("#iq-add-sup").onclick = ()=>{
+    suppliers.push({ _id: nextSupId++, name:"", tel:"", contact:"", leadTime:"", shippingCost:"" });
+    items.forEach(it=> it.costs.push(""));
+    render();
+  };
+  render();
 
   const del = document.querySelector("#iq-del");
   if (del) del.onclick = async ()=>{ if (await deleteRecord("inquiries", id)) closeModal(true); };
@@ -5242,24 +5287,28 @@ function openInquiryForm(id, preset){
     const box = $("#form-err");
     const subject = $("#iq-subject").value.trim();
     if (!subject){ box.textContent = "Subject is required."; box.classList.remove("hidden"); return; }
-    const items2 = collectItems().filter(i=>i.desc || i.itemCode);
-    const suppliers2 = collectSuppliers();
+    const items2 = items.filter(it=>it.desc || it.itemCode).map(it=>({
+      itemCode: it.itemCode||null, desc: it.desc||null, uom: it.uom||null, qty: Number(it.qty||0)||null,
+      costs: suppliers.map((_,i)=> Number((it.costs||[])[i]||0))
+    }));
     if (!items2.length){ box.textContent = "Add at least one item."; box.classList.remove("hidden"); return; }
-    if (!suppliers2.some(s=>s.name)){ box.textContent = "Add at least one supplier."; box.classList.remove("hidden"); return; }
+    const suppliers2 = suppliers.map(s=>({
+      name: s.name?.trim()||null, tel: s.tel?.trim()||null, contact: s.contact?.trim()||null,
+      leadTime: s.leadTime?.trim()||null, shippingCost: Number(s.shippingCost||0)||null
+    }));
     const ownerId = isManager() ? ($("#iq-owner").value || myUid()) : (d.ownerId || myUid());
     const owner = state.users.get(ownerId);
-    const namedCount = suppliers2.filter(s=>s.name).length;
+    const namedSuppliers = suppliers2.filter(s=>s.name);
     const payload = {
       subject, relatedType: $("#iq-reltype").value, relatedId: $("#iq-relid").value || null,
-      contactId: $("#iq-contact").value || null, dealId: $("#iq-deal").value || null,
+      contactId: $("#iq-contact").value || null,
       source: $("#iq-source").value||null,
       inquiryDate: $("#iq-date").value || null, status: $("#iq-status").value,
       ownerId, department: owner?.department || state.profile.department,
-      notedBy: $("#iq-noted").value || null, approvedBy: $("#iq-approved").value || null,
       suppliers: suppliers2, items: items2,
       selectedSupplier: (selectedSupplier!=null && suppliers2[selectedSupplier]?.name) ? selectedSupplier : null,
-      itemsSummary: items2[0].desc + (items2.length>1?` +${items2.length-1} more`:""),
-      supplierSummary: suppliers2.filter(s=>s.name).map(s=>s.name).join(", ") || `${namedCount} suppliers`,
+      itemsSummary: (items2[0].desc || items2[0].itemCode || "Item") + (items2.length>1?` +${items2.length-1} more`:""),
+      supplierSummary: namedSuppliers.length ? namedSuppliers.map(s=>s.name).join(", ") : null,
       selectedSupplierName: (selectedSupplier!=null && suppliers2[selectedSupplier]?.name) || null,
       notes: $("#iq-notes").value||null,
       updatedAt: serverTimestamp()
@@ -5289,19 +5338,20 @@ function openInquiryForm(id, preset){
   };
 }
 
-/* Read-only view of a saved inquiry — its details plus the canvass grid and
-   per-supplier totals, with the marked winner highlighted and feeding into
-   "Create Product Costing". */
+/* Read-only view of a saved inquiry — customer info, the canvass grid,
+   supplier details and per-supplier totals (including shipping), with the
+   marked winner highlighted and feeding into "Create Product Costing". */
 function openInquiryDetail(id){
   const d = state.data.inquiries.get(id); if(!d) return;
   const items = Array.isArray(d.items) ? d.items : [];
-  const suppliers = Array.isArray(d.suppliers) && d.suppliers.length===3 ? d.suppliers : [{},{},{}];
-  const totals = [0,1,2].map(i=> items.reduce((s,it)=> s + Number(it.qty||0)*Number((it.costs||[])[i]||0), 0));
+  const suppliers = Array.isArray(d.suppliers) ? d.suppliers : [];
+  const totals = suppliers.map((s,i)=> items.reduce((sum,it)=> sum + Number(it.qty||0)*Number((it.costs||[])[i]||0), 0) + Number(s.shippingCost||0));
   modal(`
     <div class="modal-h">
       <div><div class="eyebrow">Customer / Lead Inquiry</div><h3>${esc(d.subject || d.controlNo || "Inquiry")}</h3></div>
       <button class="x" data-close aria-label="Close">×</button></div>
     <div class="modal-b">
+      <div class="eyebrow" style="margin-bottom:8px">Customer information</div>
       <div class="det">
         ${d.controlNo ? `<div class="r"><div class="k">Control No.</div><div class="v mono" style="font-size:13px">${esc(d.controlNo)}</div></div>` : ""}
         <div class="r"><div class="k">Inquiry from</div><div class="v">${esc(refLabel("dynamic",d.relatedId,d))} <span class="pill">${esc(d.relatedType||"Lead")}</span></div></div>
@@ -5310,39 +5360,55 @@ function openInquiryDetail(id){
         <div class="r"><div class="k">Inquiry date</div><div class="v mono" style="font-size:13px">${fmtDate(d.inquiryDate)}</div></div>
         <div class="r"><div class="k">Status</div><div class="v">${pillFor("status",d.status)}</div></div>
         <div class="r"><div class="k">Owner</div><div class="v">${personCell(d.ownerId)}</div></div>
-        ${d.notedBy ? `<div class="r"><div class="k">Noted by</div><div class="v">${personCell(d.notedBy)}</div></div>` : ""}
-        ${d.approvedBy ? `<div class="r"><div class="k">Approved by</div><div class="v">${personCell(d.approvedBy)}</div></div>` : ""}
+        ${d.notedBy ? `<div class="r"><div class="k">Noted by</div><div class="v">${personCell(d.notedBy)}
+          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(d.notedAt)}</div></div></div>` : ""}
+        ${d.approvedBy ? `<div class="r"><div class="k">Approved by</div><div class="v">${personCell(d.approvedBy)}
+          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(d.approvedAt)}</div></div></div>` : ""}
       </div>
 
-      <div class="eyebrow" style="margin:18px 0 2px">Canvass sheet</div>
-      <table class="items" style="margin-top:8px">
+      <div class="eyebrow" style="margin:18px 0 8px">Item list inquiry</div>
+      <table class="items">
         <thead><tr>
           <th>Code</th><th>Description</th><th>U/M</th><th style="text-align:right">Qty</th>
           ${suppliers.map((s,i)=>`<th style="text-align:right" colspan="2">${esc(s?.name||`Supplier ${i+1}`)}</th>`).join("")}
         </tr></thead>
-        <tbody>${items.map(it=>`<tr>
+        <tbody>${items.length ? items.map(it=>`<tr>
           <td style="padding:7px 6px">${esc(it.itemCode||"—")}</td>
           <td style="padding:7px 6px">${esc(it.desc||"—")}</td>
           <td style="padding:7px 6px">${esc(it.uom||"—")}</td>
           <td class="num" style="padding:7px 6px">${it.qty??"—"}</td>
-          ${[0,1,2].map(i=>{
+          ${suppliers.map((s,i)=>{
             const c = Number((it.costs||[])[i]||0), amt = Number(it.qty||0)*c;
             return `<td class="num" style="padding:7px 6px">${c?money(c):"—"}</td>
               <td class="num" style="padding:7px 6px${d.selectedSupplier===i?`;font-weight:600;color:var(--accent)`:""}">${amt?money(amt):"—"}</td>`;
           }).join("")}
-        </tr>`).join("")}</tbody>
+        </tr>`).join("") : `<tr><td colspan="${4+suppliers.length*2}" class="empty">No items logged.</td></tr>`}</tbody>
       </table>
 
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:18px">
-        ${[0,1,2].map(i=>`
+      ${suppliers.length ? `
+      <div class="eyebrow" style="margin:18px 0 8px">Supplier's information</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px">
+        ${suppliers.map((s,i)=>`
           <div class="card" style="padding:12px${d.selectedSupplier===i?`;border-color:var(--accent)`:""}">
-            <div style="font-size:12px;color:var(--muted)">${esc(suppliers[i]?.name||`Supplier ${i+1}`)}</div>
-            <div style="font-size:18px;font-weight:600;margin:4px 0;font-family:var(--mono)">${money(totals[i])}</div>
-            ${suppliers[i]?.tel ? `<div style="font-size:11.5px;color:var(--muted)">${esc(suppliers[i].tel)}</div>` : ""}
-            ${suppliers[i]?.contact ? `<div style="font-size:11.5px;color:var(--muted)">${esc(suppliers[i].contact)}</div>` : ""}
+            <div style="font-size:13px;font-weight:600">${esc(s?.name||`Supplier ${i+1}`)}</div>
+            ${s?.tel ? `<div style="font-size:11.5px;color:var(--muted);margin-top:4px">${esc(s.tel)}</div>` : ""}
+            ${s?.contact ? `<div style="font-size:11.5px;color:var(--muted)">${esc(s.contact)}</div>` : ""}
+            ${s?.leadTime ? `<div style="font-size:11.5px;color:var(--muted);margin-top:4px">Lead time: ${esc(s.leadTime)}</div>` : ""}
+            ${s?.shippingCost ? `<div style="font-size:11.5px;color:var(--muted)">Shipping: ${money(s.shippingCost)}</div>` : ""}
             ${d.selectedSupplier===i ? `<span class="pill accent" style="margin-top:8px;display:inline-block">Winner</span>` : ""}
           </div>`).join("")}
       </div>
+
+      <div class="eyebrow" style="margin:18px 0 8px">Totals &amp; winner</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px">
+        ${suppliers.map((s,i)=>`
+          <div class="card" style="padding:12px${d.selectedSupplier===i?`;border-color:var(--accent)`:""}">
+            <div style="font-size:12px;color:var(--muted)">${esc(s?.name||`Supplier ${i+1}`)}</div>
+            <div style="font-size:18px;font-weight:600;margin:4px 0;font-family:var(--mono)">${money(totals[i])}</div>
+            ${d.selectedSupplier===i ? `<span class="pill accent">Winner</span>` : ""}
+          </div>`).join("")}
+      </div>` : `<div class="card" style="padding:14px;margin-top:14px"><p style="color:var(--muted);font-size:13px;margin:0">No suppliers canvassed yet. Edit this inquiry to add suppliers and pricing.</p></div>`}
+
       ${d.notes ? `<div style="margin-top:16px"><div class="eyebrow">Notes</div>
         <p style="font-size:13px;white-space:pre-wrap;margin:5px 0 0">${esc(d.notes)}</p></div>` : ""}
     </div>
@@ -5362,6 +5428,7 @@ function openInquiryDetail(id){
   $("#iq-view").onclick = ()=> openInquiryPreview(d);
   $("#iq-print").onclick = ()=> printInquiry(id);
 }
+
 
 function openCostingForm(id, preset){
   if (id){
@@ -6149,8 +6216,8 @@ function inquiryDocCSS(){
 function inquiryDocHTML(d){
   const st = state.settings;
   const items = Array.isArray(d.items) ? d.items : [];
-  const suppliers = Array.isArray(d.suppliers) && d.suppliers.length===3 ? d.suppliers : [{},{},{}];
-  const totals = [0,1,2].map(i=> items.reduce((s,it)=> s + Number(it.qty||0)*Number((it.costs||[])[i]||0), 0));
+  const suppliers = Array.isArray(d.suppliers) ? d.suppliers : [];
+  const totals = suppliers.map((s,i)=> items.reduce((sum,it)=> sum + Number(it.qty||0)*Number((it.costs||[])[i]||0), 0) + Number(s.shippingCost||0));
   const co = [st.companyAddress, st.companyPhone && "Tel: "+st.companyPhone,
               st.companyEmail, st.companyWeb, st.companyTin && "TIN: "+st.companyTin]
              .filter(Boolean).map(esc).join("<br>");
@@ -6189,7 +6256,7 @@ function inquiryDocHTML(d){
       <div class="t">${esc(d.subject || "—")}</div>
     </div>
 
-    <table class="it cv">
+    ${suppliers.length ? `<table class="it cv">
       <thead>
         <tr>
           <th rowspan="2" style="width:60px">Code</th>
@@ -6205,7 +6272,7 @@ function inquiryDocHTML(d){
         <td>${descDocHTML(it.desc)}</td>
         <td>${esc(it.uom||"—")}</td>
         <td class="c">${it.qty??"—"}</td>
-        ${[0,1,2].map(i=>{
+        ${suppliers.map((s,i)=>{
           const c = Number((it.costs||[])[i]||0), amt = Number(it.qty||0)*c;
           const win = d.selectedSupplier===i;
           return `<td class="r">${c?money(c):"—"}</td><td class="r${win?" win":""}">${amt?money(amt):"—"}</td>`;
@@ -6215,11 +6282,20 @@ function inquiryDocHTML(d){
     </table>
 
     <div class="win-row">
-      ${[0,1,2].map(i=>`<div class="card">
-        <div class="nm">${esc(suppliers[i]?.name||`Supplier ${i+1}`)}${d.selectedSupplier===i?" — WINNER":""}</div>
+      ${suppliers.map((s,i)=>`<div class="card">
+        <div class="nm">${esc(s?.name||`Supplier ${i+1}`)}${d.selectedSupplier===i?" — WINNER":""}</div>
         <div class="tt">${money(totals[i])}</div>
+        ${s?.leadTime?`<div style="font-size:9px;color:#8496A7;margin-top:3px">Lead time: ${esc(s.leadTime)}</div>`:""}
+        ${s?.shippingCost?`<div style="font-size:9px;color:#8496A7">+ ${money(s.shippingCost)} shipping</div>`:""}
       </div>`).join("")}
-    </div>
+    </div>` : `<table class="it"><thead><tr>
+        <th style="width:60px">Code</th><th>Description</th><th style="width:46px">U/M</th><th style="width:46px" class="c">Qty</th>
+      </tr></thead>
+      <tbody>${items.length ? items.map(it=>`<tr>
+        <td>${esc(it.itemCode||"—")}</td><td>${descDocHTML(it.desc)}</td><td>${esc(it.uom||"—")}</td><td class="c">${it.qty??"—"}</td>
+      </tr>`).join("") : `<tr><td colspan="4" style="text-align:center;color:#8496A7;padding:22px">Add line items to see them here.</td></tr>`}</tbody>
+    </table>
+    <p style="font-size:10.5px;color:#8496A7;margin-top:10px">No suppliers canvassed yet.</p>`}
 
     ${d.notes ? `<div class="blk">
       <div class="cap">Notes</div>
