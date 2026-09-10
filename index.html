@@ -532,6 +532,8 @@ table.previewtbl tr.rowbad td{background:var(--alert-weak)}
   box-shadow:0 26px 64px rgba(8,24,43,.32);margin:auto;
 }
 .modal.wide{max-width:860px}
+.modal.xwide{max-width:1180px}
+.modal.xwide .modal-b{max-height:78vh}
 .modal.nudge{animation:nudge .3s cubic-bezier(.36,.07,.19,.97)}
 @keyframes nudge{
   10%,90%{transform:translateX(-1.5px)} 20%,80%{transform:translateX(3px)}
@@ -1212,7 +1214,6 @@ const SCHEMAS = {
       { k:"relatedId",      l:"Lead / Customer",  type:"ref",    refTo:"dynamic", table:true },
       { k:"contactId",      l:"Contact person",   type:"ref",    refTo:"contacts" },
       { k:"dealId",         l:"Opportunity",      type:"ref",    refTo:"deals" },
-      { k:"productInterest",l:"Product / interest", type:"text", table:true },
       { k:"source",         l:"Source",           type:"select", optsFrom:"sources" },
       { k:"inquiryDate",    l:"Inquiry date",     type:"date",   table:true },
       { k:"itemsSummary",      l:"Items",             type:"text", table:true },
@@ -5069,7 +5070,7 @@ function openInquiryForm(id, preset){
     if (existing && !canWrite(existing)) return toast(readOnlyNote(existing), true);
   }
   const d = id ? { ...state.data.inquiries.get(id) } : { ...(preset || {}) };
-  let items = Array.isArray(d.items) && d.items.length ? d.items.map(i=>({...i})) : [{itemCode:"",desc:d.productInterest||"",uom:"",qty:1,costs:["","",""]}];
+  let items = Array.isArray(d.items) && d.items.length ? d.items.map(i=>({...i})) : [{itemCode:"",desc:"",uom:"",qty:1,costs:["","",""]}];
   let nextLineId = 1;
   items = items.map(i=>({ ...i, _id: nextLineId++ }));
   const suppliers = Array.isArray(d.suppliers) && d.suppliers.length===3 ? d.suppliers : [{name:"",tel:"",contact:""},{name:"",tel:"",contact:""},{name:"",tel:"",contact:""}];
@@ -5078,6 +5079,7 @@ function openInquiryForm(id, preset){
 
   modal(`
     <div class="modal-h"><h3>${id?"Edit inquiry":"New inquiry"}</h3>
+      <button class="btn sm" id="iq-expand" type="button" style="margin-left:auto">⤢ Expand</button>
       <button class="x" data-close aria-label="Close">×</button></div>
     <div class="modal-b">
       <div id="form-err" class="err hidden"></div>
@@ -5097,8 +5099,6 @@ function openInquiryForm(id, preset){
         <div class="field"><label for="iq-deal">Opportunity</label>
           <select id="iq-deal"><option value="">— None —</option>
             ${dls.map(x=>`<option value="${x.id}"${x.id===d.dealId?" selected":""}>${esc(x.title)}</option>`).join("")}</select></div>
-        <div class="field"><label for="iq-interest">Product / interest</label>
-          <input id="iq-interest" value="${esc(d.productInterest||"")}"></div>
         <div class="field"><label for="iq-source">Source</label>
           <select id="iq-source"><option value="">—</option>${(state.settings.sources||[]).map(o=>opt(o,d.source||"")).join("")}</select></div>
         <div class="field"><label for="iq-date">Inquiry date</label>
@@ -5223,6 +5223,11 @@ function openInquiryForm(id, preset){
     });
   }
 
+  $("#iq-expand").onclick = ()=>{
+    const card = document.querySelector(".modal");
+    const expanded = card.classList.toggle("xwide");
+    $("#iq-expand").textContent = expanded ? "⤡ Collapse" : "⤢ Expand";
+  };
   $("#iq-add").onclick = ()=>{ items.push({ _id: nextLineId++, itemCode:"", desc:"", uom:"", qty:1, costs:["","",""] }); drawItems(); recalc(); };
   [0,1,2].forEach(i=>{
     ["name","tel","contact"].forEach(k=> $(`#iq-sup${i}-${k}`).addEventListener("input", recalc));
@@ -5247,7 +5252,7 @@ function openInquiryForm(id, preset){
     const payload = {
       subject, relatedType: $("#iq-reltype").value, relatedId: $("#iq-relid").value || null,
       contactId: $("#iq-contact").value || null, dealId: $("#iq-deal").value || null,
-      productInterest: $("#iq-interest").value.trim()||null, source: $("#iq-source").value||null,
+      source: $("#iq-source").value||null,
       inquiryDate: $("#iq-date").value || null, status: $("#iq-status").value,
       ownerId, department: owner?.department || state.profile.department,
       notedBy: $("#iq-noted").value || null, approvedBy: $("#iq-approved").value || null,
@@ -5301,7 +5306,6 @@ function openInquiryDetail(id){
         ${d.controlNo ? `<div class="r"><div class="k">Control No.</div><div class="v mono" style="font-size:13px">${esc(d.controlNo)}</div></div>` : ""}
         <div class="r"><div class="k">Inquiry from</div><div class="v">${esc(refLabel("dynamic",d.relatedId,d))} <span class="pill">${esc(d.relatedType||"Lead")}</span></div></div>
         <div class="r"><div class="k">Contact person</div><div class="v">${esc(recordTitle("contacts",d.contactId))}</div></div>
-        <div class="r"><div class="k">Product / interest</div><div class="v">${esc(d.productInterest||"—")}</div></div>
         <div class="r"><div class="k">Source</div><div class="v">${esc(d.source||"—")}</div></div>
         <div class="r"><div class="k">Inquiry date</div><div class="v mono" style="font-size:13px">${fmtDate(d.inquiryDate)}</div></div>
         <div class="r"><div class="k">Status</div><div class="v">${pillFor("status",d.status)}</div></div>
@@ -5343,6 +5347,8 @@ function openInquiryDetail(id){
         <p style="font-size:13px;white-space:pre-wrap;margin:5px 0 0">${esc(d.notes)}</p></div>` : ""}
     </div>
     <div class="modal-f">
+      <button class="btn" id="iq-view">Preview document</button>
+      <button class="btn" id="iq-print">Print</button>
       ${canWrite(d) ? `<button class="btn" id="iq-to-costing">Create Product Costing</button>` : ""}
       <div class="spacer"></div>
       ${canWrite(d) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
@@ -5353,6 +5359,8 @@ function openInquiryDetail(id){
   if (em) em.onclick = ()=>{ closeModal(true); openInquiryForm(id); };
   const tc = document.querySelector("#iq-to-costing");
   if (tc) tc.onclick = ()=>{ closeModal(true); proceedRecord("inquiries", id); };
+  $("#iq-view").onclick = ()=> openInquiryPreview(d);
+  $("#iq-print").onclick = ()=> printInquiry(id);
 }
 
 function openCostingForm(id, preset){
@@ -6122,6 +6130,147 @@ function descAppHTML(d){
   return `<div style="font-weight:600">${esc(l[0])}</div>` +
     (l.length>1 ? `<div style="font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.5">
       ${l.slice(1).map(esc).join("<br>")}</div>` : "");
+}
+
+/* ---- Printable Inquiry / Canvass sheet — mirrors the quotation preview ---- */
+function inquiryDocCSS(){
+  return quoteDocCSS() + `
+    .sheet table.cv th.sup{ text-align:right; border-left:2px solid rgba(255,255,255,.25); }
+    .sheet table.cv th.sub{ background:#16324D; font-size:8.5px; text-align:right; }
+    .sheet table.cv td.win{ font-weight:700; color:#E8621A; }
+    .sheet .win-row{ display:flex; gap:18px; margin-top:14px; font-size:11.5px; }
+    .sheet .win-row .card{ flex:1; border:1px solid #DDE3EA; border-radius:6px; padding:9px 11px; }
+    .sheet .win-row .nm{ font-size:9px; color:#8496A7; text-transform:uppercase; letter-spacing:.08em; }
+    .sheet .win-row .tt{ font-size:14px; font-weight:700; margin-top:3px; }
+    .sheet .sign3{ display:flex; gap:30px; margin-top:52px; }
+    .sheet .sign3 div{ flex:1; }
+  `;
+}
+function inquiryDocHTML(d){
+  const st = state.settings;
+  const items = Array.isArray(d.items) ? d.items : [];
+  const suppliers = Array.isArray(d.suppliers) && d.suppliers.length===3 ? d.suppliers : [{},{},{}];
+  const totals = [0,1,2].map(i=> items.reduce((s,it)=> s + Number(it.qty||0)*Number((it.costs||[])[i]||0), 0));
+  const co = [st.companyAddress, st.companyPhone && "Tel: "+st.companyPhone,
+              st.companyEmail, st.companyWeb, st.companyTin && "TIN: "+st.companyTin]
+             .filter(Boolean).map(esc).join("<br>");
+  return `<div class="sheet">
+    <div class="lh">
+      <div>
+        <img src="${LOGO_PRINT}" alt="${esc(st.companyName||"")}">
+        <div class="co">${co || "&nbsp;"}</div>
+      </div>
+      <div class="dt">
+        <h1>CANVASS SHEET</h1>
+        <table>
+          <tr><td>Control No.</td><td class="r"><strong>${esc(d.controlNo||"—")}</strong></td></tr>
+          <tr><td>Date</td><td class="r">${fmtDate(d.inquiryDate)}</td></tr>
+          <tr><td>Status</td><td class="r">${esc(d.status||"—")}</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="parties">
+      <div>
+        <div class="cap">Inquiry from</div>
+        <div class="who">${esc(refLabel("dynamic",d.relatedId,d) || "—")}</div>
+        <div>${esc(d.relatedType||"Lead")}</div>
+        ${d.contactId?`<div>Attn: ${esc(recordTitle("contacts",d.contactId))}</div>`:""}
+      </div>
+      <div>
+        <div class="cap">Prepared by</div>
+        <div class="who">${esc(userName(d.ownerId) || "—")}</div>
+        <div>${esc(st.companyName || "")}</div>
+      </div>
+    </div>
+
+    <div class="subj">
+      <div class="cap">Subject</div>
+      <div class="t">${esc(d.subject || "—")}</div>
+    </div>
+
+    <table class="it cv">
+      <thead>
+        <tr>
+          <th rowspan="2" style="width:60px">Code</th>
+          <th rowspan="2">Description</th>
+          <th rowspan="2" style="width:46px">U/M</th>
+          <th rowspan="2" style="width:46px" class="c">Qty</th>
+          ${suppliers.map((s,i)=>`<th class="sup" colspan="2">${esc(s?.name||`Supplier ${i+1}`)}</th>`).join("")}
+        </tr>
+        <tr>${suppliers.map(()=>`<th class="sub">Unit cost</th><th class="sub">Amount</th>`).join("")}</tr>
+      </thead>
+      <tbody>${items.length ? items.map(it=>`<tr>
+        <td>${esc(it.itemCode||"—")}</td>
+        <td>${descDocHTML(it.desc)}</td>
+        <td>${esc(it.uom||"—")}</td>
+        <td class="c">${it.qty??"—"}</td>
+        ${[0,1,2].map(i=>{
+          const c = Number((it.costs||[])[i]||0), amt = Number(it.qty||0)*c;
+          const win = d.selectedSupplier===i;
+          return `<td class="r">${c?money(c):"—"}</td><td class="r${win?" win":""}">${amt?money(amt):"—"}</td>`;
+        }).join("")}
+      </tr>`).join("") : `<tr><td colspan="${4+suppliers.length*2}" style="text-align:center;color:#8496A7;padding:22px">
+        Add line items to see them here.</td></tr>`}</tbody>
+    </table>
+
+    <div class="win-row">
+      ${[0,1,2].map(i=>`<div class="card">
+        <div class="nm">${esc(suppliers[i]?.name||`Supplier ${i+1}`)}${d.selectedSupplier===i?" — WINNER":""}</div>
+        <div class="tt">${money(totals[i])}</div>
+      </div>`).join("")}
+    </div>
+
+    ${d.notes ? `<div class="blk">
+      <div class="cap">Notes</div>
+      <p>${esc(d.notes)}</p></div>` : ""}
+
+    <div class="sign3">
+      <div><div class="cap">Canvassed by</div>
+        <div class="line">${esc(userName(d.ownerId) || "")} — Signature over printed name</div></div>
+      <div><div class="cap">Noted by</div>
+        <div class="line">${esc(d.notedBy?userName(d.notedBy):"")} — Signature over printed name</div></div>
+      <div><div class="cap">Approved by</div>
+        <div class="line">${esc(d.approvedBy?userName(d.approvedBy):"")} — Signature over printed name</div></div>
+    </div>
+
+    <div class="foot">${esc(st.companyName || "")}${st.companyWeb?" · "+esc(st.companyWeb):""}
+      ${st.companyPhone?" · "+esc(st.companyPhone):""}</div>
+  </div>`;
+}
+function openInquiryPreview(d){
+  const wrap = document.createElement("div");
+  wrap.className = "scrim preview-scrim";
+  wrap.innerHTML = `
+    <style>${inquiryDocCSS()}</style>
+    <div class="preview-shell">
+      <div class="preview-bar">
+        <span class="eyebrow">Inquiry preview</span>
+        <div style="flex:1"></div>
+        <button class="btn sm" data-pp>Print</button>
+        <button class="btn sm" data-px>Close</button>
+      </div>
+      <div class="preview-page">${inquiryDocHTML(d)}</div>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close = ()=> wrap.remove();
+  wrap.querySelector("[data-px]").onclick = close;
+  wrap.onclick = e=>{ if (e.target === wrap) close(); };
+  wrap.querySelector("[data-pp]").onclick = ()=> printInquiryDoc(d);
+}
+function printInquiryDoc(d){
+  const w = window.open("", "_blank", "width=900,height=1100");
+  if (!w){ toast("Allow pop-ups to print", true); return; }
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>${esc(d.controlNo||"Inquiry")}</title><style>
+    body{margin:0;background:#fff}${inquiryDocCSS()}</style></head>
+    <body>${inquiryDocHTML(d)}</body></html>`);
+  w.document.close();
+  setTimeout(()=>{ w.focus(); w.print(); }, 500);
+}
+function printInquiry(id){
+  const d = state.data.inquiries.get(id);
+  if (d) printInquiryDoc(d);
 }
 
 function quoteDocCSS(){
