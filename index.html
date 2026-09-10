@@ -2334,6 +2334,8 @@ function viewList(col){
           ${canWrite(d) ? `
             ${col==="leads" && d.status!=="Converted" ? `<button class="btn sm" data-convert="${d.id}">Convert</button> `:""}
             ${col==="activities" && d.status!=="Done" ? `<button class="btn sm" data-donebtn="${d.id}">Done</button> `:""}
+            ${["inquiries","canvass"].includes(col) ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
+            ${col==="costing" && d.status==="Approved" ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
             <button class="btn sm" data-edit="${col}:${d.id}">Edit</button>`
           : `<span class="pill" title="${esc(readOnlyNote(d))}">${esc(initials(userName(d.ownerId)))}</span>`}
         </td>
@@ -3965,6 +3967,11 @@ function wireView(){
   });
   v.querySelectorAll("[data-go]").forEach(el=> el.onclick = ()=> setRoute(el.dataset.go));
   v.querySelectorAll("[data-convert]").forEach(el=> el.onclick = ()=> openConvert(el.dataset.convert));
+  v.querySelectorAll("[data-proceed]").forEach(el=> el.onclick = e=>{
+    e.stopPropagation();
+    const [col,pid] = el.dataset.proceed.split(":");
+    proceedRecord(col,pid);
+  });
   v.querySelectorAll("[data-user]").forEach(el=> el.onclick = ()=> openUserForm(el.dataset.user));
   v.querySelectorAll("[data-reset]").forEach(el=> el.onclick = async ()=>{
     const em = el.dataset.reset; if(!em) return;
@@ -4422,6 +4429,42 @@ async function upsertCanvassCatalog(vals){
 }
 
 /* ---- read-only detail ---- */
+/* The Sales & Quotation Management pipeline: each stage hands its control
+   number and identifying details forward to the next, so a quotation can
+   always be traced back to the inquiry it started from. Shared by the
+   "Proceed →" row action and the buttons inside each record's detail view. */
+function proceedRecord(col, id){
+  const d = state.data[col]?.get(id);
+  if (!d) return;
+  if (col === "inquiries"){
+    openForm("canvass", null, {
+      controlNo: d.controlNo || null, inquiryId: id,
+      accountId: d.relatedType === "Account" ? d.relatedId : null,
+      refNo: d.controlNo ? `Canvass for ${d.controlNo}` : "",
+      ownerId: d.ownerId
+    });
+  } else if (col === "canvass"){
+    openForm("costing", null, {
+      controlNo: d.controlNo || null, canvassId: id,
+      accountId: d.accountId || null, dealId: d.dealId || null,
+      productName: d.productName || "", baseCost: d.unitCost || null,
+      ownerId: d.ownerId
+    });
+  } else if (col === "costing"){
+    if (d.status !== "Approved"){
+      toast("Approve this costing sheet first — then Proceed creates the quotation.", true);
+      return;
+    }
+    openQuoteForm(null, {
+      controlNo: d.controlNo || null, costingId: id,
+      accountId: d.accountId || null, dealId: d.dealId || null,
+      title: d.productName ? `Quotation for ${d.productName}` : "",
+      ownerId: d.ownerId,
+      items: [{ desc: d.productName || "", qty:1, price: costingSellingPrice(d) }]
+    });
+  }
+}
+
 function openDetail(col,id){
   if (col === "quotations") return openQuoteDetail(id);
   const S = SCHEMAS[col], d = state.data[col].get(id);
@@ -4489,37 +4532,10 @@ function openDetail(col,id){
   // The Sales & Quotation Management pipeline: each stage hands its control
   // number and identifying details forward to the next, so a quotation can
   // always be traced back to the inquiry it started from.
-  const toCanvass = document.querySelector("#to-canvass");
-  if (toCanvass) toCanvass.onclick = ()=>{
-    closeModal(true);
-    openForm("canvass", null, {
-      controlNo: d.controlNo || null, inquiryId: id,
-      accountId: d.relatedType === "Account" ? d.relatedId : null,
-      refNo: d.controlNo ? `Canvass for ${d.controlNo}` : "",
-      ownerId: d.ownerId
-    });
-  };
-  const toCosting = document.querySelector("#to-costing");
-  if (toCosting) toCosting.onclick = ()=>{
-    closeModal(true);
-    openForm("costing", null, {
-      controlNo: d.controlNo || null, canvassId: id,
-      accountId: d.accountId || null, dealId: d.dealId || null,
-      productName: d.productName || "", baseCost: d.unitCost || null,
-      ownerId: d.ownerId
-    });
-  };
-  const toQuote = document.querySelector("#to-quote");
-  if (toQuote) toQuote.onclick = ()=>{
-    closeModal(true);
-    openQuoteForm(null, {
-      controlNo: d.controlNo || null, costingId: id,
-      accountId: d.accountId || null, dealId: d.dealId || null,
-      title: d.productName ? `Quotation for ${d.productName}` : "",
-      ownerId: d.ownerId,
-      items: [{ desc: d.productName || "", qty:1, price: costingSellingPrice(d) }]
-    });
-  };
+  ["#to-canvass","#to-costing","#to-quote"].forEach(sel=>{
+    const btn = document.querySelector(sel);
+    if (btn) btn.onclick = ()=>{ closeModal(true); proceedRecord(col, id); };
+  });
   document.querySelectorAll("[data-quickdone]").forEach(b=> b.onclick = async ()=>{
     await markDone(b.dataset.quickdone); closeModal(true);
   });
