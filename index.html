@@ -1082,10 +1082,12 @@ const SCHEMAS = {
     label:"Quotation", plural:"Quotations", icon:"❑", titleField:"quoteNo",
     fields:[
       { k:"quoteNo",    l:"Quote no.",   type:"text",   req:true, table:true },
+      { k:"controlNo",  l:"Control No.", type:"text",   table:true },
       { k:"title",      l:"Subject",     type:"text",   req:true, table:true },
       { k:"accountId",  l:"Customer",    type:"ref",    refTo:"accounts", table:true },
       { k:"dealId",     l:"Opportunity", type:"ref",    refTo:"deals" },
       { k:"contactId",  l:"Attention to",type:"ref",    refTo:"contacts" },
+      { k:"costingId",  l:"From costing", type:"ref",   refTo:"costing" },
       { k:"status",     l:"Status",      type:"select", opts:["Draft","Sent","Viewed","Approved","Declined","Expired"], def:"Draft", table:true },
       { k:"issueDate",  l:"Issued",      type:"date",   table:true },
       { k:"validUntil", l:"Valid until", type:"date",   table:true },
@@ -1175,6 +1177,7 @@ const SCHEMAS = {
     label:"Inquiry", plural:"Customer / lead inquiries", icon:"◐", titleField:"subject",
     fields:[
       { k:"subject",        l:"Subject",         type:"text",   req:true, table:true },
+      { k:"controlNo",      l:"Control No. (auto)", type:"text", table:true },
       { k:"relatedType",    l:"Inquiry from",     type:"select", opts:["Lead","Account"], def:"Lead", table:true },
       { k:"relatedId",      l:"Lead / Customer",  type:"ref",    refTo:"dynamic", table:true },
       { k:"contactId",      l:"Contact person",   type:"ref",    refTo:"contacts" },
@@ -1190,6 +1193,8 @@ const SCHEMAS = {
     label:"Canvass", plural:"Canvass summary", icon:"⌗", titleField:"refNo",
     fields:[
       { k:"refNo",          l:"Reference",        type:"text",   req:true, table:true },
+      { k:"controlNo",      l:"Control No.",      type:"text",   table:true },
+      { k:"inquiryId",      l:"From inquiry",     type:"ref",    refTo:"inquiries" },
       { k:"accountId",      l:"Customer",         type:"ref",    refTo:"accounts", table:true },
       { k:"dealId",         l:"Opportunity",      type:"ref",    refTo:"deals" },
       { k:"productName",    l:"Product / item",   type:"text",   req:true, table:true },
@@ -1203,6 +1208,31 @@ const SCHEMAS = {
       { k:"status",         l:"Status",            type:"select", opts:["Draft","Reviewed","Selected","Rejected"], def:"Draft", table:true },
       { k:"ownerId",        l:"Owner",             type:"ref",    refTo:"users", table:true, assignOnly:true },
       { k:"remarks",        l:"Remarks",           type:"textarea", full:true }
+    ]
+  },
+  /* Costing sits between Canvass Summary and Quotation: a sheet built from
+     the canvassed cost, carried through an approval gate before it can turn
+     into a quotation. Selling price is always derived from cost + markup,
+     never typed in directly — see costingSellingPrice(). */
+  costing: {
+    label:"Product costing", plural:"Product costing", icon:"⌬", titleField:"controlNo",
+    fields:[
+      { k:"controlNo",    l:"Control No.",       type:"text",   table:true },
+      { k:"canvassId",    l:"From canvass",      type:"ref",    refTo:"canvass", table:true },
+      { k:"accountId",    l:"Customer",          type:"ref",    refTo:"accounts", table:true },
+      { k:"dealId",       l:"Opportunity",       type:"ref",    refTo:"deals" },
+      { k:"productName",  l:"Product / item",    type:"text",   req:true, table:true },
+      { k:"baseCost",     l:"Base cost",         type:"money",  table:true },
+      { k:"freight",      l:"Freight",           type:"money" },
+      { k:"duties",       l:"Duties / taxes",    type:"money" },
+      { k:"otherCost",    l:"Other cost",        type:"money" },
+      { k:"markupPct",    l:"Markup %",          type:"number", table:true },
+      { k:"sellingPrice", l:"Selling price",     type:"computed", table:true },
+      { k:"status",       l:"Status",            type:"select", opts:["Draft","Submitted for Approval","Approved","Rejected"], def:"Draft", table:true },
+      { k:"approvedBy",   l:"Approved by",       type:"ref",    refTo:"users" },
+      { k:"approvedAt",   l:"Approved on",       type:"date" },
+      { k:"ownerId",      l:"Owner",             type:"ref",    refTo:"users", table:true, assignOnly:true },
+      { k:"remarks",      l:"Remarks",           type:"textarea", full:true }
     ]
   },
   followups: {
@@ -1221,6 +1251,7 @@ const SCHEMAS = {
     label:"Sales order", plural:"Sales orders", icon:"⬒", titleField:"orderNo",
     fields:[
       { k:"orderNo",       l:"Order no.",     type:"text",   req:true, table:true },
+      { k:"controlNo",     l:"Control No.",   type:"text",   table:true },
       { k:"accountId",     l:"Customer",      type:"ref",    refTo:"accounts", table:true },
       { k:"quotationId",   l:"Quotation",     type:"ref",    refTo:"quotations", table:true },
       { k:"dealId",        l:"Opportunity",   type:"ref",    refTo:"deals" },
@@ -1303,6 +1334,13 @@ function shortMoney(n){
   if (Math.abs(v) >= 1e6) return sym + (v/1e6).toFixed(1).replace(/\.0$/,"") + "M";
   if (Math.abs(v) >= 1e3) return sym + (v/1e3).toFixed(0) + "K";
   return sym + v;
+}
+/* A costing sheet's selling price is always derived from cost + markup,
+   never typed in directly, so the sheet and any quotation made from it
+   can't drift apart. */
+function costingSellingPrice(d){
+  const cost = Number(d.baseCost||0) + Number(d.freight||0) + Number(d.duties||0) + Number(d.otherCost||0);
+  return cost * (1 + Number(d.markupPct||0)/100);
 }
 function fmtDate(d){
   if(!d) return "—";
@@ -1869,7 +1907,8 @@ const NEW_FOR = { leads:"leads", pipeline:"deals", accounts:"accounts", contacts
                   prospects:"accounts", partners:"accounts", projects:"deals", engagement:"activities",
                   events:"campaigns", registry:"accounts",
                   inquiries:"inquiries", canvass:"canvass", followups:"followups",
-                  salesorders:"salesorders", products:"products", suppliers:"suppliers" };
+                  salesorders:"salesorders", products:"products", suppliers:"suppliers",
+                  costing:"costing" };
 $("#new-btn").onclick = ()=>{
   if (state.route === "team")     return openUserForm();
   if (state.route === "settings") return setRoute("team");
@@ -1894,7 +1933,7 @@ const TITLES = { dashboard:"Dashboard", leads:"Leads", pipeline:"Opportunities",
 function render(){
   if(!state.profile) return;
   $("#view-title").textContent = TITLES[state.route] || "Mechatrade";
-  $("#new-btn").classList.toggle("hidden", ["reports","settings","forecast","costing"].includes(state.route));
+  $("#new-btn").classList.toggle("hidden", ["reports","settings","forecast"].includes(state.route));
   $("#new-btn").textContent = state.route==="team" ? "Add person" : "New " + (SCHEMAS[NEW_FOR[state.route]]?.label.toLowerCase() || "record");
   const v = $("#view");
   switch(state.route){
@@ -1904,7 +1943,6 @@ function render(){
     case "performance":v.innerHTML = viewPerformance(); break;
     case "registry":   v.innerHTML = viewRegistry();    break;
     case "forecast":   v.innerHTML = viewForecast();    break;
-    case "costing":    v.innerHTML = viewCosting();    break;
     case "prospects":
     case "partners":
     case "projects":
@@ -1950,6 +1988,8 @@ function cell(col,f,d){
   if (f.type === "computed"){
     if (f.k === "expectedRevenue")
       return `<span class="mono">${money(Number(d.value||0) * stageProb(d.stage)/100)}</span>`;
+    if (f.k === "sellingPrice")
+      return `<span class="mono">${money(costingSellingPrice(d))}</span>`;
     return "—";
   }
   if (f.type === "links") return renderLinks(v);
@@ -2397,6 +2437,7 @@ async function createSalesOrderFromQuote(q){
     const owner = state.users.get(q.ownerId);
     await addDoc(collection(db,"salesorders"), {
       orderNo: q.quoteNo ? `SO-${q.quoteNo}` : `SO-${Date.now()}`,
+      controlNo: q.controlNo || null,
       accountId: q.accountId || null, quotationId: q.id, dealId: q.dealId || null,
       orderDate: todayISO(), total: Number(q.total || 0) || null, status:"Processing",
       ownerId: q.ownerId || myUid(), department: owner?.department || state.profile.department,
@@ -3141,27 +3182,6 @@ function viewBDDashboard(){
 /* ------------------------------------------------------------------ */
 /* 11i. PIPELINE FORECAST                                              */
 /* ------------------------------------------------------------------ */
-/* Product Costing — menu slot reserved, not built out yet. Canvass Summary
-   already captures per-item canvassed cost; this screen will turn that into
-   a full costing sheet (freight, duties, markup) in a later pass. */
-function viewCosting(){
-  const recent = rows("canvass").sort((a,b)=>(toDate(b.canvassDate)||0)-(toDate(a.canvassDate)||0)).slice(0,8);
-  return `<div class="card"><div class="empty">
-    <strong>Product Costing is coming soon</strong>
-    This screen will build a full landed-cost sheet (freight, duties, markup) on top of Canvass Summary entries.
-    ${recent.length ? `In the meantime, here's your most recent canvassing:` : `Start by logging a few items in Canvass Summary.`}
-  </div>
-  ${recent.length ? `<div class="tbl-wrap"><table>
-    <thead><tr><th>Product</th><th>Supplier</th><th style="text-align:right">Cost</th><th>Canvassed</th></tr></thead>
-    <tbody>${recent.map(c=>`<tr>
-      <td><span class="lnk" data-open="canvass:${c.id}">${esc(c.productName||"—")}</span></td>
-      <td>${esc(c.supplierName||"—")}</td>
-      <td class="num">${c.unitCost?money(c.unitCost):"—"}</td>
-      <td class="mono" style="font-size:12px">${fmtDate(c.canvassDate)}</td>
-    </tr>`).join("")}</tbody>
-  </table></div>` : ""}
-  </div>`;
-}
 function viewForecast(){
   const open = rows("deals").filter(d=>OPEN_STAGES.includes(d.stage));
   const months = [];
@@ -3970,6 +3990,9 @@ function wireView(){
           status: el.value, statusChangedAt: serverTimestamp(), updatedAt: serverTimestamp()
         });
         toast(`Marked ${el.value}`);
+        if (col === "costing" && el.value === "Approved"){
+          await updateDoc(doc(db,col,id), { approvedBy: myUid(), approvedAt: serverTimestamp() });
+        }
         if (col === "quotations"){
           const q = state.data.quotations.get(id);
           if (q) await syncDealFromQuote({ ...q, id, status: el.value }, el.value);
@@ -4295,6 +4318,26 @@ function openForm(col, id, preset){
   };
 }
 
+/* A single tracking number, generated once when an inquiry is created, that
+   rides along through Canvass Summary, Product Costing, Quotation and the
+   resulting Sales Order so the whole chain can be traced from one control
+   number. Uses its own "CN-" counter series — a separate namespace from the
+   "MTISI-" quote-number counters, so the two never collide. Unlike quote
+   numbers, these are never released for reuse: a gap here just means a
+   record was deleted, which is fine for an internal tracking number. */
+async function nextControlNo(dept){
+  const now = new Date();
+  const key = `CN-${QUOTE_PREFIX[dept] || "ADM"}-${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+  let n = 1;
+  await runTransaction(db, async tx=>{
+    const cref = doc(db,"counters",key);
+    const snap = await tx.get(cref);
+    n = Number(snap.exists() ? snap.data().next : 1) || 1;
+    tx.set(cref, { next:n+1, updatedAt:serverTimestamp() }, { merge:true });
+  });
+  return `${key}-${String(n).padStart(5,"0")}`;
+}
+
 async function submitForm(col,id){
   const S = SCHEMAS[col], vals = {}, errs = [];
   document.querySelectorAll("#modal-root [data-k]").forEach(el=>{
@@ -4332,6 +4375,12 @@ async function submitForm(col,id){
   } else if (col==="deals" && prev && prev.stage !== vals.stage){
     payload.stageChangedAt = serverTimestamp();
     if (["Won","Lost"].includes(vals.stage)) payload.closedAt = serverTimestamp();
+  }
+  // A new inquiry is where the chain starts, so it's the one place a control
+  // number is minted rather than carried over from an earlier stage.
+  if (col === "inquiries" && !id){
+    try{ payload.controlNo = await nextControlNo(payload.department); }
+    catch(e){ console.warn("control number", e); }
   }
   $("#save").disabled = true;
   try{
@@ -4415,6 +4464,9 @@ function openDetail(col,id){
     </div>
     <div class="modal-f">
       ${col==="leads" && d.status!=="Converted" ? `<button class="btn" id="conv">Convert to deal</button>`:""}
+      ${col==="inquiries" && canWrite(d) ? `<button class="btn" id="to-canvass">Create Canvass Summary</button>`:""}
+      ${col==="canvass" && canWrite(d) ? `<button class="btn" id="to-costing">Create Product Costing</button>`:""}
+      ${col==="costing" && d.status==="Approved" && canWrite(d) ? `<button class="btn" id="to-quote">Create Quotation</button>`:""}
       <div class="spacer"></div>
       ${canWrite(d) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
       <button class="btn" data-close>Close</button>
@@ -4433,6 +4485,40 @@ function openDetail(col,id){
     closeModal(true);
     openQuoteForm(null, { dealId:id, accountId:d.accountId, contactId:d.contactId,
                           title:d.title, ownerId:d.ownerId });
+  };
+  // The Sales & Quotation Management pipeline: each stage hands its control
+  // number and identifying details forward to the next, so a quotation can
+  // always be traced back to the inquiry it started from.
+  const toCanvass = document.querySelector("#to-canvass");
+  if (toCanvass) toCanvass.onclick = ()=>{
+    closeModal(true);
+    openForm("canvass", null, {
+      controlNo: d.controlNo || null, inquiryId: id,
+      accountId: d.relatedType === "Account" ? d.relatedId : null,
+      refNo: d.controlNo ? `Canvass for ${d.controlNo}` : "",
+      ownerId: d.ownerId
+    });
+  };
+  const toCosting = document.querySelector("#to-costing");
+  if (toCosting) toCosting.onclick = ()=>{
+    closeModal(true);
+    openForm("costing", null, {
+      controlNo: d.controlNo || null, canvassId: id,
+      accountId: d.accountId || null, dealId: d.dealId || null,
+      productName: d.productName || "", baseCost: d.unitCost || null,
+      ownerId: d.ownerId
+    });
+  };
+  const toQuote = document.querySelector("#to-quote");
+  if (toQuote) toQuote.onclick = ()=>{
+    closeModal(true);
+    openQuoteForm(null, {
+      controlNo: d.controlNo || null, costingId: id,
+      accountId: d.accountId || null, dealId: d.dealId || null,
+      title: d.productName ? `Quotation for ${d.productName}` : "",
+      ownerId: d.ownerId,
+      items: [{ desc: d.productName || "", qty:1, price: costingSellingPrice(d) }]
+    });
   };
   document.querySelectorAll("[data-quickdone]").forEach(b=> b.onclick = async ()=>{
     await markDone(b.dataset.quickdone); closeModal(true);
@@ -4519,13 +4605,17 @@ function openConvert(leadId){
 const DEPENDENTS = {
   accounts: [["contacts","accountId"],["deals","accountId"],["quotations","accountId"],
              ["activities","relatedId"],["inquiries","relatedId"],["followups","relatedId"],
-             ["canvass","accountId"],["salesorders","accountId"]],
+             ["canvass","accountId"],["salesorders","accountId"],["costing","accountId"]],
   contacts: [["deals","contactId"],["quotations","contactId"],["activities","relatedId"],
              ["inquiries","contactId"]],
-  deals:    [["quotations","dealId"],["activities","relatedId"],["canvass","dealId"],["salesorders","dealId"]],
+  deals:    [["quotations","dealId"],["activities","relatedId"],["canvass","dealId"],
+             ["salesorders","dealId"],["costing","dealId"]],
   campaigns:[["leads","campaignId"],["deals","campaignId"],["content","campaignId"]],
   leads:    [["activities","relatedId"],["inquiries","relatedId"],["followups","relatedId"]],
-  quotations:[["followups","relatedId"],["salesorders","quotationId"]]
+  quotations:[["followups","relatedId"],["salesorders","quotationId"]],
+  inquiries:[["canvass","inquiryId"]],
+  canvass:  [["costing","canvassId"]],
+  costing:  [["quotations","costingId"]]
 };
 function dependentsOf(col, id){
   const out = [];
@@ -4830,6 +4920,9 @@ function openQuoteForm(id, preset){
           <input id="q-no" value="${esc(q.quoteNo || "")}" readonly
             placeholder="Issued when you save">
           <span class="hint" id="q-no-hint"></span></div>
+        ${q.controlNo ? `<div class="field"><label for="q-control">Control No.</label>
+          <input id="q-control" value="${esc(q.controlNo)}" readonly>
+          <span class="hint">Traces back through Costing, Canvass Summary and the original Inquiry.</span></div>` : ""}
         <div class="field"><label for="q-status">Status</label>
           <select id="q-status">${["Draft","Sent","Viewed","Approved","Declined","Expired"].map(o=>opt(o,q.status||"Draft")).join("")}</select></div>
         <div class="field full"><label for="q-title">Subject <span class="req">*</span></label>
@@ -5057,6 +5150,7 @@ function openQuoteForm(id, preset){
       subtotal:t.sub, total:t.total, terms:$("#q-terms").value||null,
       ownerId, department: state.users.get(ownerId)?.department || state.profile.department,
       accountManagerId: state.data.accounts.get($("#q-acct").value)?.accountManagerId || null,
+      controlNo: q.controlNo || null, costingId: q.costingId || null,
       updatedAt: serverTimestamp()
     };
     $("#q-save").disabled = true;
@@ -5139,6 +5233,7 @@ function openQuoteDetail(id){
     <div class="modal-b">
       <div class="det">
         <div class="r full"><div class="k">Subject</div><div class="v">${esc(q.title||"—")}</div></div>
+        ${q.controlNo ? `<div class="r"><div class="k">Control No.</div><div class="v mono" style="font-size:13px">${esc(q.controlNo)}</div></div>` : ""}
         <div class="r"><div class="k">Customer</div><div class="v">${esc(recordTitle("accounts",q.accountId))}</div></div>
         <div class="r"><div class="k">Attention to</div><div class="v">${esc(recordTitle("contacts",q.contactId))}</div></div>
         <div class="r"><div class="k">Status</div><div class="v">${pillFor("status",st)}</div></div>
