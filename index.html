@@ -5098,12 +5098,32 @@ function iqItemRow(l, idx, supCount){
     <td style="width:56px"><input data-f="uom" value="${esc(l.uom||"")}" placeholder="pc"></td>
     <td style="width:58px"><input data-f="qty" type="number" min="0" step="any" value="${esc(l.qty??1)}"></td>
     ${Array.from({length:supCount},(_,i)=>`
-      <td style="width:84px"><input data-f="cost${i}" type="number" min="0" step="any" value="${esc((l.costs||[])[i]??"")}" placeholder="No quote"></td>
+      <td style="width:84px;text-align:right;font-family:var(--mono);font-size:12.5px" data-out="price${i}">—</td>
       <td style="width:92px;text-align:right;font-family:var(--mono);font-size:12.5px" data-out="amt${i}">—</td>`).join("")}
     <td style="width:26px"><button class="x" data-del-line="${l._id}" title="Remove">×</button></td>
   </tr>`;
 }
-function iqSupplierBlock(s, idx){
+/* Each supplier now carries its own per-item pricing: a checklist of the
+   items on this inquiry, with a checkbox for "did this supplier quote it"
+   and — only once checked — a price field. Unticked items stay null (no
+   quote) and never show a price field, so a supplier that only covers 2 of
+   5 items doesn't leave 3 confusing blanks. The Item list inquiry table
+   reads from this data too (see iqItemRow / recalc) rather than taking
+   input itself, so the two views never disagree. */
+function iqQuoteRow(it, ii, s, supIdx){
+  const raw = (it.costs||[])[supIdx];
+  const checked = raw !== null && raw !== undefined;
+  const priceVal = (raw === "" || raw === null || raw === undefined) ? "" : raw;
+  return `<div class="iq-qrow" data-item="${it._id}" style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line-2)">
+    <label style="display:flex;align-items:center;gap:7px;flex:1;font-size:12.5px;cursor:pointer">
+      <input type="checkbox" data-quote-chk${checked?" checked":""}>
+      <span>${String(ii+1).padStart(2,"0")} — ${esc(it.desc||"Item "+(ii+1))}</span>
+    </label>
+    <input type="number" data-quote-price min="0" step="any" placeholder="Price" value="${esc(priceVal)}"
+      style="width:88px;flex:none${checked?"":";visibility:hidden"}">
+  </div>`;
+}
+function iqSupplierBlock(s, idx, items){
   const intl = (s.purchaseType||"Local") === "International";
   const curVal = s.currency || originCurrency(s.originCountry);
   return `<div class="card" data-sup="${s._id}" style="padding:12px;position:relative">
@@ -5125,6 +5145,14 @@ function iqSupplierBlock(s, idx){
       <select data-sf="currency">${Object.keys(CUR_SYM).filter(c=>c!=="PHP").map(c=>opt(c,curVal)).join("")}</select></div>` : ""}
     <div class="field" style="margin-top:9px"><label>Shipping cost${intl?` (${esc(curVal)})`:""}</label>
       <input data-sf="shippingCost" type="number" min="0" step="any" value="${esc(s.shippingCost??"")}"></div>
+    <div class="field" style="margin-top:9px">
+      <label>Items quoted${intl?` (${esc(curVal)})`:""}</label>
+      <div data-quote-list style="margin-top:4px">
+        ${items.length
+          ? items.map((it,ii)=>iqQuoteRow(it,ii,s,idx)).join("")
+          : `<p class="note" style="margin:2px 0 0">Add items above first.</p>`}
+      </div>
+    </div>
   </div>`;
 }
 function openInquiryForm(id, preset){
@@ -5134,14 +5162,19 @@ function openInquiryForm(id, preset){
   }
   const d = id ? { ...state.data.inquiries.get(id) } : { ...(preset || {}) };
   let nextLineId = 1, nextSupId = 1;
-  let items = Array.isArray(d.items) && d.items.length ? d.items.map(i=>({...i})) : [{itemCode:"",desc:"",uom:"",qty:1,costs:[]}];
+  let items = Array.isArray(d.items) && d.items.length ? d.items.map(i=>({...i})) : [{desc:"",uom:"",qty:1,costs:[]}];
   items = items.map(i=>({ ...i, _id: nextLineId++ }));
   let suppliers = Array.isArray(d.suppliers) ? d.suppliers.map(s=>({...s}))
                 : (id ? [] : [0,1,2].map(()=>({name:"",tel:"",contact:"",leadTime:"",shippingCost:""})));
   suppliers = suppliers.map(s=>({ ...s, _id: nextSupId++ }));
   items.forEach(it=>{
     const c = Array.isArray(it.costs) ? it.costs : [];
-    it.costs = suppliers.map((_,i)=> c[i] ?? "");
+    // Missing entries (e.g. a supplier added after this item existed) start
+    // unquoted (null). Stored null/"" (unquoted / quoted-but-blank) and
+    // actual numbers are preserved as-is — only a genuinely absent slot
+    // gets defaulted, so a saved "No quote" doesn't turn into a blank,
+    // checked price field on reopen.
+    it.costs = suppliers.map((_,i)=> c[i] === undefined ? null : c[i]);
   });
   let selectedSupplier = d.selectedSupplier ?? null;
 
@@ -5234,22 +5267,18 @@ function openInquiryForm(id, preset){
     $("#iq-items").querySelectorAll("tr[data-id]").forEach(tr=>{
       const line = items.find(x=>x._id === Number(tr.dataset.id));
       tr.querySelectorAll("[data-f]").forEach(inp=> inp.addEventListener("input", ()=>{
-        const f = inp.dataset.f;
-        // Blank stays blank (no quote) — it does not get coerced to 0, so a
-        // supplier that simply didn't price this item is distinguishable
-        // from one that quoted ₱0.
-        if (f.startsWith("cost")) line.costs[Number(f.slice(4))] = inp.value === "" ? "" : Number(inp.value);
-        else line[f] = inp.type==="number" ? Number(inp.value||0) : inp.value;
+        line[inp.dataset.f] = inp.type==="number" ? Number(inp.value||0) : inp.value;
         recalc();
       }));
       const delBtn = tr.querySelector("[data-del-line]");
       delBtn.onclick = ()=>{ if (items.length<=1) return; items = items.filter(x=>x._id!==line._id); render(); };
     });
 
-    $("#iq-suppliers").innerHTML = suppliers.map((s,i)=>iqSupplierBlock(s,i)).join("");
+    $("#iq-suppliers").innerHTML = suppliers.map((s,i)=>iqSupplierBlock(s,i,items)).join("");
     $("#iq-suppliers").querySelectorAll("[data-sup]").forEach(block=>{
       const sid = Number(block.dataset.sup);
       const s = suppliers.find(x=>x._id===sid);
+      const supIdx = suppliers.findIndex(x=>x._id===sid);
       block.querySelectorAll("[data-sf]").forEach(inp=> inp.addEventListener("input", ()=>{
         const key = inp.dataset.sf;
         s[key] = inp.type==="number" ? Number(inp.value||0) : inp.value;
@@ -5263,6 +5292,34 @@ function openInquiryForm(id, preset){
         if (key === "originCountry"){ s.currency = originCurrency(s.originCountry); render(); return; }
         recalc();
       }));
+      // Per-item "did this supplier quote it" checklist. Unticking clears
+      // the price and reverts the item to null (no quote); ticking reveals
+      // a blank price field ready for entry. The item list inquiry table
+      // just mirrors this — see recalc().
+      block.querySelectorAll("[data-item]").forEach(row=>{
+        const itemId = Number(row.dataset.item);
+        const it = items.find(x=>x._id===itemId);
+        if (!it) return;
+        const chk = row.querySelector("[data-quote-chk]");
+        const priceInp = row.querySelector("[data-quote-price]");
+        chk.addEventListener("change", ()=>{
+          if (!Array.isArray(it.costs)) it.costs = suppliers.map(()=>null);
+          if (chk.checked){
+            it.costs[supIdx] = (it.costs[supIdx]==null) ? "" : it.costs[supIdx];
+            priceInp.style.visibility = "visible";
+            priceInp.focus();
+          } else {
+            it.costs[supIdx] = null;
+            priceInp.value = "";
+            priceInp.style.visibility = "hidden";
+          }
+          recalc();
+        });
+        priceInp.addEventListener("input", ()=>{
+          it.costs[supIdx] = priceInp.value === "" ? "" : Number(priceInp.value);
+          recalc();
+        });
+      });
       block.querySelector("[data-del-sup]").onclick = ()=>{
         const idx = suppliers.findIndex(x=>x._id===sid);
         if (idx<0) return;
@@ -5297,9 +5354,11 @@ function openInquiryForm(id, preset){
       if (!tr) return;
       suppliers.forEach((s,i)=>{
         const raw = (it.costs||[])[i];
-        const out = tr.querySelector(`[data-out="amt${i}"]`);
-        if (!out) return;
-        out.innerHTML = isQuoted(raw) ? money(Number(it.qty||0)*Number(raw)) : NO_QUOTE_TAG;
+        const q = isQuoted(raw);
+        const priceOut = tr.querySelector(`[data-out="price${i}"]`);
+        const amtOut = tr.querySelector(`[data-out="amt${i}"]`);
+        if (priceOut) priceOut.innerHTML = q ? money(Number(raw)) : NO_QUOTE_TAG;
+        if (amtOut) amtOut.innerHTML = q ? money(Number(it.qty||0)*Number(raw)) : "—";
       });
     });
     document.querySelectorAll("#iq-items-head th[colspan]").forEach((th,i)=>{
@@ -5326,10 +5385,10 @@ function openInquiryForm(id, preset){
     const expanded = card.classList.toggle("xwide");
     $("#iq-expand").textContent = expanded ? "⤡ Collapse" : "⤢ Expand";
   };
-  $("#iq-add").onclick = ()=>{ items.push({ _id: nextLineId++, desc:"", uom:"", qty:1, costs: suppliers.map(()=>"") }); render(); };
+  $("#iq-add").onclick = ()=>{ items.push({ _id: nextLineId++, desc:"", uom:"", qty:1, costs: suppliers.map(()=>null) }); render(); };
   $("#iq-add-sup").onclick = ()=>{
     suppliers.push({ _id: nextSupId++, name:"", tel:"", contact:"", leadTime:"", shippingCost:"" });
-    items.forEach(it=> it.costs.push(""));
+    items.forEach(it=> it.costs.push(null));
     render();
   };
   render();
