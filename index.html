@@ -1453,6 +1453,23 @@ function iqWinnerAnalysis(items, suppliers){
   const worthwhile = best!=null && best.usedSuppliers.length>1 && (generalTotal==null || best.total < generalTotal);
   return { totals, completeIdx, generalWinner, generalTotal, best, savings, savingsPct, worthwhile };
 }
+/* The actual, manually-ticked winner — each item carries its own
+   winnerIdx (which supplier's tick was checked for that item, or null).
+   Unlike iqComboCost this never auto-picks the cheapest; it just totals up
+   whatever the person actually chose, item by item. This is the source of
+   truth for highlighting, the printed sheet, and Proceed to Costing. */
+function iqManualCombo(items, suppliers){
+  const itemWinners = items.map(it=>
+    (it.winnerIdx!=null && isQuoted((it.costs||[])[it.winnerIdx])) ? it.winnerIdx : null);
+  const usedSuppliers = Array.from(new Set(itemWinners.filter(x=>x!=null)));
+  const allCovered = items.length>0 && itemWinners.every(x=>x!=null);
+  const goods = items.reduce((sum,it,idx)=>{
+    const wi = itemWinners[idx];
+    return wi==null ? sum : sum + Number(it.qty||0)*Number((it.costs||[])[wi]);
+  }, 0);
+  const shipping = usedSuppliers.reduce((sum,i)=> sum + Number(suppliers[i]?.shippingCost||0), 0);
+  return { itemWinners, usedSuppliers, allCovered, total: goods + shipping };
+}
 /* Formats a figure in its own currency (CUR_SYM), unlike money() which
    always uses the org's base currency — for showing a foreign supplier's
    shipping cost etc. in the currency it was actually entered in. */
@@ -4674,32 +4691,47 @@ function proceedRecord(col, id){
     const items = Array.isArray(d.items) ? d.items : [];
     const named = suppliers.map((s,i)=>({s,i})).filter(x=>x.s?.name);
     if (!named.length){ toast("Add at least one supplier to this inquiry's canvass sheet first.", true); return; }
-    const winners = Array.isArray(d.selectedSuppliers) ? d.selectedSuppliers
-                  : (d.selectedSupplier!=null ? [d.selectedSupplier] : []);
-    if (winners.length > 1){
-      const names = winners.map(i=>suppliers[i]?.name).filter(Boolean).join(", ");
-      toast(`This inquiry's winner is split across suppliers (${names}) — open the inquiry and create a Product Costing sheet for each one's items separately.`, true);
+    // The ticked "Winner" per item — the manual, item-by-item choice made
+    // in each supplier's "Items quoted" checklist — is the only source of
+    // truth here. One contributing supplier opens a single pre-filled
+    // Costing sheet as before; more than one queues up a sheet per
+    // supplier, opened one after another as each is saved, so nothing gets
+    // silently created without a chance to review it first.
+    const combo = iqManualCombo(items, suppliers);
+    if (!combo.usedSuppliers.length){
+      toast("Tick a Winner for at least one item (in each supplier's \"Items quoted\" list) before proceeding.", true);
       return;
     }
-    let supIdx = winners[0];
-    if (supIdx == null || !suppliers[supIdx]?.name){
-      supIdx = named[0].i;
-      toast(`No supplier marked as winner — using ${suppliers[supIdx].name}. Open the inquiry to choose one instead.`, true);
-    }
-    const sup = suppliers[supIdx] || {};
-    const costItems = items
-      .filter(it=>it.desc || it.itemCode)
-      .map(it=>({ desc: [it.itemCode,it.desc].filter(Boolean).join(" — "), qty: it.qty||1, price: (it.costs||[])[supIdx] || "" }));
-    openForm("costing", null, {
-      controlNo: d.controlNo || null, inquiryId: id,
-      accountId: d.relatedType === "Account" ? d.relatedId : null,
-      supplierName: sup.name || "", supplierContact: sup.contact || "",
-      shippingCost: sup.shippingCost || null,
-      purchaseType: sup.purchaseType || "International",
-      supplierCurrency: sup.purchaseType === "International" ? (sup.currency || "USD") : "USD",
-      items: costItems.length ? costItems : [{ desc:"", qty:1, price:"" }],
-      ownerId: d.ownerId
+    const queue = combo.usedSuppliers.map(supIdx=>{
+      const sup = suppliers[supIdx] || {};
+      const costItems = items
+        .map((it,idx)=> combo.itemWinners[idx]===supIdx
+          ? { desc: [it.itemCode,it.desc].filter(Boolean).join(" — "), qty: it.qty||1, price: (it.costs||[])[supIdx] || "" }
+          : null)
+        .filter(Boolean);
+      return { sup, costItems };
     });
+    if (!combo.allCovered) toast("Note: some items have no Winner ticked and won't be included in any costing sheet.", true);
+    if (queue.length > 1) toast(`Winning items span ${queue.length} suppliers — opening a costing sheet for each, one at a time.`);
+    const openQueued = (i)=>{
+      if (i >= queue.length) return;
+      const { sup, costItems } = queue[i];
+      openForm("costing", null, {
+        controlNo: d.controlNo || null, inquiryId: id,
+        accountId: d.relatedType === "Account" ? d.relatedId : null,
+        supplierName: sup.name || "", supplierContact: sup.contact || "",
+        shippingCost: sup.shippingCost || null,
+        purchaseType: sup.purchaseType || "International",
+        supplierCurrency: sup.purchaseType === "International" ? (sup.currency || "USD") : "USD",
+        items: costItems.length ? costItems : [{ desc:"", qty:1, price:"" }],
+        ownerId: d.ownerId,
+        __onSaved: queue.length>1 ? ()=>{
+          toast(`Costing sheet ${i+1} of ${queue.length} created (${sup.name}).`);
+          openQueued(i+1);
+        } : null
+      });
+    };
+    openQueued(0);
   } else if (col === "costing"){
     if (d.status !== "Approved"){
       toast("Approve this costing sheet first — then Proceed creates the quotation.", true);
@@ -5173,13 +5205,18 @@ function iqItemRow(l, idx, supCount){
    items on this inquiry, with a checkbox for "did this supplier quote it"
    and — only once checked — a price field. Unticked items stay null (no
    quote) and never show a price field, so a supplier that only covers 2 of
-   5 items doesn't leave 3 confusing blanks. The Item list inquiry table
-   reads from this data too (see iqItemRow / recalc) rather than taking
-   input itself, so the two views never disagree. */
+   5 items doesn't leave 3 confusing blanks. Next to the price is a
+   "Winner" tick — the actual, manual choice of whose quote to use for that
+   item. Only one supplier can win a given item, so ticking one clears any
+   other supplier's tick for the same item (matched by item id, across
+   whichever card it's in). The Item list inquiry table reads from this
+   data too (see iqItemRow / recalc) rather than taking input itself, so
+   the two views never disagree. */
 function iqQuoteRow(it, ii, s, supIdx){
   const raw = (it.costs||[])[supIdx];
   const checked = raw !== null && raw !== undefined;
   const priceVal = (raw === "" || raw === null || raw === undefined) ? "" : raw;
+  const isWinner = it.winnerIdx === supIdx;
   return `<div class="iq-qrow" data-item="${it._id}" style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line-2)">
     <label style="display:flex;align-items:center;gap:7px;flex:1;font-size:12.5px;cursor:pointer">
       <input type="checkbox" data-quote-chk${checked?" checked":""}>
@@ -5187,6 +5224,9 @@ function iqQuoteRow(it, ii, s, supIdx){
     </label>
     <input type="number" data-quote-price min="0" step="any" placeholder="Price" value="${esc(priceVal)}"
       style="width:88px;flex:none${checked?"":";visibility:hidden"}">
+    <label style="display:flex;align-items:center;gap:4px;font-size:10.5px;color:var(--muted);flex:none;cursor:pointer${checked?"":";visibility:hidden"}" title="Mark as the winning quote for this item">
+      <input type="checkbox" data-item-winner${isWinner?" checked":""}> Winner
+    </label>
   </div>`;
 }
 function iqSupplierBlock(s, idx, items){
@@ -5242,11 +5282,17 @@ function openInquiryForm(id, preset){
     // checked price field on reopen.
     it.costs = suppliers.map((_,i)=> c[i] === undefined ? null : c[i]);
   });
-  // Manually chosen winner(s) — any number of suppliers. One supplier picked
-  // behaves like the old single winner; more than one is a manual split.
-  // Falls back to the previous single-winner field for older records.
-  let winners = Array.isArray(d.selectedSuppliers) ? d.selectedSuppliers.slice()
-              : (d.selectedSupplier!=null ? [d.selectedSupplier] : []);
+  // The manual, per-item winner tick. Falls back for older records saved
+  // before this — with a prior selected-supplier(s) list but no per-item
+  // ticks yet — by seeding each item's winner with whichever of those
+  // suppliers was cheapest on it, so the old choice carries forward
+  // instead of silently resetting to "no winner."
+  if (items.some(it=> it.winnerIdx===undefined)){
+    const legacy = Array.isArray(d.selectedSuppliers) ? d.selectedSuppliers
+                 : (d.selectedSupplier!=null ? [d.selectedSupplier] : []);
+    const seeded = legacy.length ? iqComboCost(items, suppliers, legacy).itemWinners : null;
+    items.forEach((it,idx)=>{ if (it.winnerIdx===undefined) it.winnerIdx = seeded ? seeded[idx] : null; });
+  }
 
   modal(`
     <div class="modal-h"><h3>${id?"Edit inquiry":"New inquiry"}</h3>
@@ -5288,15 +5334,15 @@ function openInquiryForm(id, preset){
       <button class="btn sm" id="iq-add" style="margin-top:8px">+ Add item</button>
 
       <div class="eyebrow" style="margin:20px 0 10px">Supplier's information</div>
-      <div id="iq-suppliers" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px"></div>
+      <div id="iq-suppliers" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px"></div>
       <button class="btn sm" id="iq-add-sup" style="margin-top:10px">+ Add supplier</button>
       <p class="note">Suppliers are optional — you can log this inquiry with just its items and add suppliers later.</p>
 
       <div class="eyebrow" style="margin:20px 0 9px">Totals &amp; winner</div>
-      <div id="iq-totals" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px"></div>
+      <div id="iq-totals" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px"></div>
       <div id="iq-selection"></div>
       <div id="iq-split"></div>
-      <p class="note">Select as many suppliers as you like — for each item, whichever selected supplier is cheapest wins it, so you can mix and match (e.g. one supplier for the item they undercut everyone on, another for the rest). "Best combination" below suggests the cheapest possible pick, factoring in each supplier's shipping.</p>
+      <p class="note">Tick "Winner" next to an item in a supplier's "Items quoted" list to choose whose price is used for that item — only one supplier can win each item. "Best combination" below suggests the cheapest possible set of ticks, factoring in each supplier's shipping, with one click to apply it.</p>
 
       <div class="eyebrow" style="margin:20px 0 2px">Notes</div>
       <div class="field full"><textarea id="iq-notes">${esc(d.notes||"")}</textarea></div>
@@ -5363,24 +5409,32 @@ function openInquiryForm(id, preset){
       }));
       // Per-item "did this supplier quote it" checklist. Unticking clears
       // the price and reverts the item to null (no quote); ticking reveals
-      // a blank price field ready for entry. The item list inquiry table
-      // just mirrors this — see recalc().
+      // a blank price field ready for entry. Next to it, the Winner tick is
+      // the actual manual pick of whose quote to use for that item — only
+      // one can be checked per item, enforced across every supplier card
+      // by clearing any sibling with the same item id. The item list
+      // inquiry table just mirrors all of this — see recalc().
       block.querySelectorAll("[data-item]").forEach(row=>{
         const itemId = Number(row.dataset.item);
         const it = items.find(x=>x._id===itemId);
         if (!it) return;
         const chk = row.querySelector("[data-quote-chk]");
         const priceInp = row.querySelector("[data-quote-price]");
+        const winChk = row.querySelector("[data-item-winner]");
+        const winLabel = winChk.closest("label");
         chk.addEventListener("change", ()=>{
           if (!Array.isArray(it.costs)) it.costs = suppliers.map(()=>null);
           if (chk.checked){
             it.costs[supIdx] = (it.costs[supIdx]==null) ? "" : it.costs[supIdx];
             priceInp.style.visibility = "visible";
             priceInp.focus();
+            if (winLabel) winLabel.style.visibility = "visible";
           } else {
             it.costs[supIdx] = null;
             priceInp.value = "";
             priceInp.style.visibility = "hidden";
+            if (winLabel) winLabel.style.visibility = "hidden";
+            if (it.winnerIdx === supIdx){ it.winnerIdx = null; winChk.checked = false; }
           }
           recalc();
         });
@@ -5388,13 +5442,24 @@ function openInquiryForm(id, preset){
           it.costs[supIdx] = priceInp.value === "" ? "" : Number(priceInp.value);
           recalc();
         });
+        winChk.addEventListener("change", ()=>{
+          it.winnerIdx = winChk.checked ? supIdx : null;
+          // Clear the tick on this same item in every other supplier card.
+          document.querySelectorAll(`[data-item="${it._id}"] [data-item-winner]`).forEach(cb=>{
+            if (cb !== winChk) cb.checked = false;
+          });
+          recalc();
+        });
       });
       block.querySelector("[data-del-sup]").onclick = ()=>{
         const idx = suppliers.findIndex(x=>x._id===sid);
         if (idx<0) return;
         suppliers.splice(idx,1);
-        items.forEach(it=> it.costs.splice(idx,1));
-        winners = winners.filter(w=>w!==idx).map(w=> w>idx ? w-1 : w);
+        items.forEach(it=>{
+          it.costs.splice(idx,1);
+          if (it.winnerIdx===idx) it.winnerIdx = null;
+          else if (it.winnerIdx!=null && it.winnerIdx>idx) it.winnerIdx--;
+        });
         render();
       };
     });
@@ -5403,20 +5468,11 @@ function openInquiryForm(id, preset){
       <div class="card" style="padding:12px" data-total="${i}">
         <div style="font-size:12px;color:var(--muted)" data-tname>${esc(s.name||`Supplier ${i+1}`)}${s.purchaseType==="International"?` (${esc(s.currency||"USD")})`:""}</div>
         <div style="font-size:11px;margin-top:2px" data-tflag></div>
-        <div style="font-size:18px;font-weight:600;margin:4px 0 10px;font-family:var(--mono)" data-tval>₱0</div>
-        <button class="btn sm" data-win="${i}" type="button" style="width:100%">Select as winner</button>
+        <div style="font-size:18px;font-weight:600;margin:4px 0;font-family:var(--mono)" data-tval>₱0</div>
       </div>`).join("");
     if (suppliers.some(s=>s.purchaseType==="International") && suppliers.some(s=>(s.purchaseType||"Local")==="Local"))
       $("#iq-totals").insertAdjacentHTML("beforeend",
         `<p class="note" style="grid-column:1/-1">Totals aren't currency-converted — international and local supplier figures are shown in their own currency, so compare with that in mind.</p>`);
-    $("#iq-totals").querySelectorAll("[data-win]").forEach(btn=> btn.onclick = ()=>{
-      // Multi-select — toggling one supplier never clears the others, so
-      // you can build any combination by hand (e.g. supplier A for the one
-      // item they undercut everyone on, supplier B for the rest).
-      const i = Number(btn.dataset.win);
-      winners = winners.includes(i) ? winners.filter(w=>w!==i) : [...winners, i];
-      recalc();
-    });
 
     recalc();
   }
@@ -5439,10 +5495,11 @@ function openInquiryForm(id, preset){
         + (s.purchaseType==="International" ? ` <span style="font-weight:400;color:var(--muted)">(${esc(s.currency||"USD")})</span>` : "");
     });
     const analysis = iqWinnerAnalysis(items, suppliers);
-    const chosen = iqComboCost(items, suppliers, winners);
-    // Item list inquiry: highlight whichever of your CHOSEN supplier(s)
-    // is cheapest for each row — so picking two suppliers shows exactly
-    // which item each one is winning.
+    const chosen = iqManualCombo(items, suppliers);
+    // Item list inquiry: highlight whichever supplier is manually ticked as
+    // the Winner for each row (see the "Items quoted" checklist per
+    // supplier card) — this is the actual, hand-picked choice, not an
+    // auto-computed cheapest.
     items.forEach((it,idx)=>{
       const tr = document.querySelector(`#iq-items tr[data-id="${it._id}"]`);
       if (!tr) return;
@@ -5461,38 +5518,34 @@ function openInquiryForm(id, preset){
         ? `<span class="pill accent" style="font-size:10px">Lowest complete</span>`
         : (s.name && !analysis.completeIdx.includes(i) ? `<span class="pill" style="font-size:10px;opacity:.7">Incomplete quote</span>` : "");
       card.querySelector("[data-tval]").innerHTML = money(analysis.totals[i]);
-      const btn = card.querySelector("[data-win]");
-      const isChosen = winners.includes(i);
-      btn.classList.toggle("pri", isChosen);
-      btn.textContent = isChosen ? "✓ Selected" : "Select as winner";
     });
 
-    // Your current selection, whatever it is — always shown so it's clear
+    // Your ticked winner(s), whatever they are — always shown so it's clear
     // what Proceed to Product Costing would use.
     const selBox = $("#iq-selection");
     if (selBox){
-      if (!winners.length){
+      if (!chosen.usedSuppliers.length){
         selBox.innerHTML = "";
       } else {
-        const names = winners.map(i=>suppliers[i]?.name).filter(Boolean).join(", ");
+        const names = chosen.usedSuppliers.map(i=>suppliers[i]?.name).filter(Boolean).join(", ");
         selBox.innerHTML = `<div class="card" style="padding:12px;margin-top:12px${chosen.allCovered?";border-color:var(--accent)":""}">
-          <div style="font-size:12px;font-weight:600">Your selection${winners.length>1?` — split across ${winners.length} suppliers`:""}</div>
+          <div style="font-size:12px;font-weight:600">Ticked winner(s)${chosen.usedSuppliers.length>1?` — split across ${chosen.usedSuppliers.length} suppliers`:""}</div>
           <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${esc(names)}</div>
           <div style="font-size:18px;font-weight:600;margin:6px 0;font-family:var(--mono)">${money(chosen.total)}</div>
-          ${chosen.allCovered ? "" : `<div style="font-size:11.5px;color:var(--warn)">Doesn't cover every item — some items have no quote from the supplier(s) you picked.</div>`}
+          ${chosen.allCovered ? "" : `<div style="font-size:11.5px;color:var(--warn)">Some items don't have a Winner ticked yet — they won't carry through to Product Costing.</div>`}
         </div>`;
       }
     }
 
     // Exemption Rule suggestion: the cheapest possible combination, shown
-    // whenever it beats what's currently selected (or nothing's selected
-    // yet) — a one-click starting point, not a requirement.
+    // whenever it beats what's currently ticked (or nothing's ticked yet) —
+    // a one-click way to tick everything at once, which you can still
+    // hand-adjust afterward.
     const box = $("#iq-split");
     if (!box) return;
     const showSuggestion = analysis.best && analysis.best.usedSuppliers.length &&
-      (!winners.length || analysis.best.total < chosen.total || !chosen.allCovered) &&
-      !(winners.length && new Set(winners).size===new Set(analysis.best.usedSuppliers).size
-        && analysis.best.usedSuppliers.every(i=>winners.includes(i)));
+      (!chosen.usedSuppliers.length || analysis.best.total < chosen.total || !chosen.allCovered) &&
+      !(chosen.usedSuppliers.length && analysis.best.itemWinners.every((w,idx)=> w===chosen.itemWinners[idx]));
     if (showSuggestion){
       const names = analysis.best.usedSuppliers.map(i=>suppliers[i]?.name).filter(Boolean).join(", ");
       const label = analysis.best.usedSuppliers.length>1 ? `Best combination — split across ${analysis.best.usedSuppliers.length} suppliers` : "Best single supplier";
@@ -5504,9 +5557,12 @@ function openInquiryForm(id, preset){
         <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${esc(names)}</div>
         <div style="font-size:18px;font-weight:600;margin:6px 0;font-family:var(--mono)">${money(analysis.best.total)}</div>
         <div style="font-size:11.5px;color:var(--muted)">${savingsLine}</div>
-        <button class="btn sm pri" id="iq-apply-split" type="button" style="margin-top:9px">Use this combination</button>
+        <button class="btn sm pri" id="iq-apply-split" type="button" style="margin-top:9px">Tick this combination</button>
       </div>`;
-      $("#iq-apply-split").onclick = ()=>{ winners = analysis.best.usedSuppliers.slice(); recalc(); };
+      $("#iq-apply-split").onclick = ()=>{
+        items.forEach((it,idx)=>{ it.winnerIdx = analysis.best.itemWinners[idx]; });
+        render();
+      };
     } else {
       box.innerHTML = "";
     }
@@ -5518,7 +5574,7 @@ function openInquiryForm(id, preset){
     const expanded = card.classList.toggle("xwide");
     $("#iq-expand").textContent = expanded ? "⤡ Collapse" : "⤢ Expand";
   };
-  $("#iq-add").onclick = ()=>{ items.push({ _id: nextLineId++, desc:"", uom:"", qty:1, costs: suppliers.map(()=>null) }); render(); };
+  $("#iq-add").onclick = ()=>{ items.push({ _id: nextLineId++, desc:"", uom:"", qty:1, costs: suppliers.map(()=>null), winnerIdx: null }); render(); };
   $("#iq-add-sup").onclick = ()=>{
     suppliers.push({ _id: nextSupId++, name:"", tel:"", contact:"", leadTime:"", shippingCost:"" });
     items.forEach(it=> it.costs.push(null));
@@ -5529,7 +5585,9 @@ function openInquiryForm(id, preset){
   // Drops blank rows, then renumbers the code column 01, 02… by the order
   // that remains — the code is never typed, only assigned by position.
   // Costs pass through isQuoted() so a blank cell is stored as null (no
-  // quote) rather than being coerced to 0.
+  // quote) rather than being coerced to 0. winnerIdx carries the manually
+  // ticked Winner for that item straight through, unchanged by the
+  // renumbering since supplier positions don't move.
   function finalizeItems(){
     return items.filter(it=>(it.desc||"").trim()).map((it,idx)=>({
       itemCode: String(idx+1).padStart(2,"0"),
@@ -5537,7 +5595,8 @@ function openInquiryForm(id, preset){
       costs: suppliers.map((_,i)=>{
         const raw = (it.costs||[])[i];
         return isQuoted(raw) ? Number(raw) : null;
-      })
+      }),
+      winnerIdx: (it.winnerIdx!=null && isQuoted((it.costs||[])[it.winnerIdx])) ? it.winnerIdx : null
     }));
   }
 
@@ -5552,7 +5611,6 @@ function openInquiryForm(id, preset){
       ownerId: (isManager() ? $("#iq-owner").value : d.ownerId) || myUid(),
       items: finalizeItems(),
       suppliers,
-      selectedSuppliers: winners,
       notes: $("#iq-notes").value || null
     });
   };
@@ -5579,10 +5637,11 @@ function openInquiryForm(id, preset){
     const ownerId = isManager() ? ($("#iq-owner").value || myUid()) : (d.ownerId || myUid());
     const owner = state.users.get(ownerId);
     const namedSuppliers = suppliers2.filter(s=>s.name);
-    // Suppliers keep the same positions in suppliers2 as in the live
-    // `suppliers` array (finalizeItems only drops blank ITEM rows), so the
-    // chosen indices still line up — just drop any that lost their name.
-    const winners2 = winners.filter(i=> suppliers2[i]?.name);
+    // The actual winner(s) — derived straight from each item's ticked
+    // winnerIdx, kept only as a convenience summary for list views and the
+    // Proceed-to-Costing handoff. The per-item ticks in `items2` remain the
+    // source of truth.
+    const finalCombo = iqManualCombo(items2, suppliers2);
     const payload = {
       subject, relatedType: $("#iq-reltype").value, relatedId: $("#iq-relid").value || null,
       contactId: $("#iq-contact").value || null,
@@ -5590,12 +5649,12 @@ function openInquiryForm(id, preset){
       inquiryDate: $("#iq-date").value || null, status: $("#iq-status").value,
       ownerId, department: owner?.department || state.profile.department,
       suppliers: suppliers2, items: items2,
-      selectedSuppliers: winners2,
-      selectedSupplier: winners2.length===1 ? winners2[0] : null,
+      selectedSuppliers: finalCombo.usedSuppliers,
+      selectedSupplier: finalCombo.usedSuppliers.length===1 ? finalCombo.usedSuppliers[0] : null,
       itemsSummary: (items2[0].desc || items2[0].itemCode || "Item") + (items2.length>1?` +${items2.length-1} more`:""),
       supplierSummary: namedSuppliers.length ? namedSuppliers.map(s=>s.name).join(", ") : null,
-      selectedSupplierName: winners2.length
-        ? winners2.map(i=>suppliers2[i]?.name).filter(Boolean).join(" + ")
+      selectedSupplierName: finalCombo.usedSuppliers.length
+        ? finalCombo.usedSuppliers.map(i=>suppliers2[i]?.name).filter(Boolean).join(" + ")
         : null,
       notes: $("#iq-notes").value||null,
       updatedAt: serverTimestamp()
@@ -5632,12 +5691,10 @@ function openInquiryDetail(id){
   const d = state.data.inquiries.get(id); if(!d) return;
   const items = Array.isArray(d.items) ? d.items : [];
   const suppliers = Array.isArray(d.suppliers) ? d.suppliers : [];
-  const winners = Array.isArray(d.selectedSuppliers) ? d.selectedSuppliers
-                : (d.selectedSupplier!=null ? [d.selectedSupplier] : []);
   const analysis = iqWinnerAnalysis(items, suppliers);
-  const chosen = iqComboCost(items, suppliers, winners);
+  const chosen = iqManualCombo(items, suppliers);
   const totals = analysis.totals;
-  const isWinnerSup = i => winners.includes(i);
+  const isWinnerSup = i => chosen.usedSuppliers.includes(i);
   modal(`
     <div class="modal-h">
       <div><div class="eyebrow">Customer / Lead Inquiry</div><h3>${esc(d.subject || d.controlNo || "Inquiry")}</h3></div>
@@ -5682,7 +5739,7 @@ function openInquiryDetail(id){
 
       ${suppliers.length ? `
       <div class="eyebrow" style="margin:18px 0 8px">Supplier's information</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
         ${suppliers.map((s,i)=>`
           <div class="card" style="padding:12px${isWinnerSup(i)?`;border-color:var(--accent)`:""}">
             <div style="font-size:13px;font-weight:600">${esc(s?.name||`Supplier ${i+1}`)}</div>
@@ -5696,23 +5753,23 @@ function openInquiryDetail(id){
             ${!s?.name ? "" : (analysis.completeIdx.includes(i)
                 ? `<span class="pill" style="margin-top:8px;display:inline-block;font-size:10px">Complete quote</span>`
                 : `<span class="pill" style="margin-top:8px;display:inline-block;font-size:10px;opacity:.7">Incomplete quote</span>`)}
-            ${isWinnerSup(i) ? `<span class="pill accent" style="margin-top:8px;margin-left:6px;display:inline-block">${winners.length>1?"In selection":"Winner"}</span>` : ""}
+            ${isWinnerSup(i) ? `<span class="pill accent" style="margin-top:8px;margin-left:6px;display:inline-block">${chosen.usedSuppliers.length>1?"In selection":"Winner"}</span>` : ""}
           </div>`).join("")}
       </div>
 
       <div class="eyebrow" style="margin:18px 0 8px">Totals &amp; winner</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px">
         ${suppliers.map((s,i)=>`
           <div class="card" style="padding:12px${isWinnerSup(i)?`;border-color:var(--accent)`:""}">
             <div style="font-size:12px;color:var(--muted)">${esc(s?.name||`Supplier ${i+1}`)}</div>
             <div style="font-size:18px;font-weight:600;margin:4px 0;font-family:var(--mono)">${money(totals[i])}</div>
-            ${isWinnerSup(i) ? `<span class="pill accent">${winners.length>1?"In selection":"Winner"}</span>` : ""}
+            ${isWinnerSup(i) ? `<span class="pill accent">${chosen.usedSuppliers.length>1?"In selection":"Winner"}</span>` : ""}
           </div>`).join("")}
       </div>
       <p class="note" style="margin-top:8px">
-        ${winners.length
-          ? `${winners.length>1?`Split across ${winners.length} suppliers`:`${esc(suppliers[winners[0]]?.name||"This supplier")} marked winner`} — combined total ${money(chosen.total)}${!chosen.allCovered?" (doesn't cover every item)":""}.`
-          : `No winner selected yet. ${analysis.generalWinner!=null?`${esc(suppliers[analysis.generalWinner]?.name)} quoted every item at the lowest total (${money(analysis.generalTotal)}).`:`No supplier has quoted every item yet.`}${analysis.best && analysis.best.usedSuppliers.length>1 && analysis.worthwhile?` A cheaper combination exists: ${analysis.best.usedSuppliers.map(i=>esc(suppliers[i]?.name)).join(" + ")} for ${money(analysis.best.total)}.`:""}`}
+        ${chosen.usedSuppliers.length
+          ? `${chosen.usedSuppliers.length>1?`Split across ${chosen.usedSuppliers.length} suppliers`:`${esc(suppliers[chosen.usedSuppliers[0]]?.name||"This supplier")} ticked as winner`} — combined total ${money(chosen.total)}${!chosen.allCovered?" (doesn't cover every item)":""}.`
+          : `No winner ticked yet. ${analysis.generalWinner!=null?`${esc(suppliers[analysis.generalWinner]?.name)} quoted every item at the lowest total (${money(analysis.generalTotal)}).`:`No supplier has quoted every item yet.`}${analysis.best && analysis.best.usedSuppliers.length>1 && analysis.worthwhile?` A cheaper combination exists: ${analysis.best.usedSuppliers.map(i=>esc(suppliers[i]?.name)).join(" + ")} for ${money(analysis.best.total)}.`:""}`}
       </p>` : `<div class="card" style="padding:14px;margin-top:14px"><p style="color:var(--muted);font-size:13px;margin:0">No suppliers canvassed yet. Edit this inquiry to add suppliers and pricing.</p></div>`}
 
       ${d.notes ? `<div style="margin-top:16px"><div class="eyebrow">Notes</div>
@@ -5989,6 +6046,7 @@ function openCostingForm(id, preset){
         await tracked(addDoc(collection(db,"costing"), payload));
       }
       closeModal(true); toast("Costing sheet " + (id?"saved":"created"));
+      if (!id && typeof d.__onSaved === "function") d.__onSaved();
     }catch(e){
       $("#co-save").disabled = false;
       box.textContent = e.message; box.classList.remove("hidden");
@@ -6523,12 +6581,10 @@ function inquiryDocHTML(d){
   const st = state.settings;
   const items = Array.isArray(d.items) ? d.items : [];
   const suppliers = Array.isArray(d.suppliers) ? d.suppliers : [];
-  const winners = Array.isArray(d.selectedSuppliers) ? d.selectedSuppliers
-                : (d.selectedSupplier!=null ? [d.selectedSupplier] : []);
   const analysis = iqWinnerAnalysis(items, suppliers);
-  const chosen = iqComboCost(items, suppliers, winners);
+  const chosen = iqManualCombo(items, suppliers);
   const totals = analysis.totals;
-  const isWinnerSup = i => winners.includes(i);
+  const isWinnerSup = i => chosen.usedSuppliers.includes(i);
   const co = [st.companyAddress, st.companyPhone && "Tel: "+st.companyPhone,
               st.companyEmail, st.companyWeb, st.companyTin && "TIN: "+st.companyTin]
              .filter(Boolean).map(esc).join("<br>");
@@ -6596,14 +6652,14 @@ function inquiryDocHTML(d){
 
     <div class="win-row">
       ${suppliers.map((s,i)=>`<div class="card">
-        <div class="nm">${esc(s?.name||`Supplier ${i+1}`)}${isWinnerSup(i)?(winners.length>1?" — IN SELECTION":" — WINNER"):""}</div>
+        <div class="nm">${esc(s?.name||`Supplier ${i+1}`)}${isWinnerSup(i)?(chosen.usedSuppliers.length>1?" — IN SELECTION":" — WINNER"):""}</div>
         <div class="tt">${money(totals[i])}</div>
         ${s?.purchaseType==="International"?`<div style="font-size:9px;color:#8496A7;margin-top:3px">${esc(s.originCountry||"")} · ${esc(s.currency||"USD")}</div>`:""}
         ${s?.leadTime?`<div style="font-size:9px;color:#8496A7;margin-top:3px">Lead time: ${esc(s.leadTime)}</div>`:""}
         ${s?.shippingCost?`<div style="font-size:9px;color:#8496A7">+ ${s.purchaseType==="International"?fx(s.shippingCost,s.currency):money(s.shippingCost)} shipping</div>`:""}
       </div>`).join("")}
     </div>
-    ${winners.length>1 ? `<p style="font-size:9.5px;color:#8496A7;margin-top:8px">Order split across ${winners.length} suppliers — combined total ${money(chosen.total)}${!chosen.allCovered?" (doesn't cover every item)":""}.</p>` : ""}
+    ${chosen.usedSuppliers.length>1 ? `<p style="font-size:9.5px;color:#8496A7;margin-top:8px">Order split across ${chosen.usedSuppliers.length} suppliers — combined total ${money(chosen.total)}${!chosen.allCovered?" (doesn't cover every item)":""}.</p>` : ""}
     ` : `<table class="it"><thead><tr>
         <th style="width:60px">Code</th><th>Description</th><th style="width:46px">U/M</th><th style="width:46px" class="c">Qty</th>
       </tr></thead>
