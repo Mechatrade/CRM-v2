@@ -3010,7 +3010,7 @@ function viewTasks(){
 /* ------------------------------------------------------------------ */
 const TYPE_TONE = { "Meeting":"accent", "Site Visit":"warn", "Call":"info", "Demo":"accent",
   "Presentation":"accent", "MOU / Agreement":"info", "Content":"warn", "Email":"", "Task":"",
-  "Inquiry":"info", "Quotation":"accent", "Follow-up":"warn" };
+  "Inquiry":"info", "Quotation":"accent", "Follow-up":"warn", "Costing":"accent" };
 function viewCalendar(){
   const f = state.filters.calendar || (state.filters.calendar = { offset:0, day:null });
   const base = new Date(); base.setDate(1); base.setMonth(base.getMonth() + f.offset);
@@ -3029,7 +3029,9 @@ function viewCalendar(){
     .concat(rows("quotations").filter(q=>q.issueDate)
       .map(q=>({ ...q, _c:"quotations", dueDate:q.issueDate, subject:q.title||q.quoteNo||"Quotation", type:"Quotation" })))
     .concat(rows("followups").filter(f=>f.followUpDate)
-      .map(f=>({ ...f, _c:"followups", dueDate:f.followUpDate, type:"Follow-up" })));
+      .map(f=>({ ...f, _c:"followups", dueDate:f.followUpDate, type:"Follow-up" })))
+    .concat(rows("costing").filter(c=>c.status==="Approved" && c.approvedAt)
+      .map(c=>({ ...c, _c:"costing", dueDate:c.approvedAt, subject:c.itemsSummary||c.controlNo||"Product costing", type:"Costing" })));
   const byDay = new Map();
   acts.forEach(a=>{
     const d = toDate(a.dueDate); if(!d) return;
@@ -3082,7 +3084,7 @@ function viewCalendar(){
       ${selected.map(a=>`<tr>
         <td>${pillFor("type",a.type)}</td>
         <td><span class="lnk" data-open="${a._c||"activities"}:${a.id}">${esc(a.subject)}</span>
-          <div style="font-size:11.5px;color:var(--muted)">${esc(a._c==="quotations" ? recordTitle("accounts",a.accountId) : refLabel("dynamic",a.relatedId,a))}</div></td>
+          <div style="font-size:11.5px;color:var(--muted)">${esc(["quotations","costing"].includes(a._c) ? recordTitle("accounts",a.accountId) : refLabel("dynamic",a.relatedId,a))}</div></td>
         ${isManager()?`<td style="font-size:12.5px">${esc(userName(a.ownerId))}</td>`:""}
         <td class="row-act">${a._c && a._c!=="activities" ? pillFor("status",a.status)
           : a.status==="Done" ? `<span class="pill accent">Done</span>`
@@ -7746,4 +7748,3 @@ if (firebaseConfig.apiKey === "REPLACE_ME"){
 
 </body>
 </html>
-
