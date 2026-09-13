@@ -2576,6 +2576,12 @@ function viewList(col){
   if(!S) return `<div class="empty"><strong>Nothing here</strong>That screen doesn't exist.</div>`;
   const f = state.filters[col] || {};
   let list = rows(col).filter(d=>matches(d,col));
+  // A Converted lead has already become a Customer — leaving it sitting in
+  // the Leads list too just invites confusion about which one's current,
+  // so it's hidden by default. Nothing is deleted; "Show converted" below
+  // still gets to it for the rare audit/history check.
+  const convertedLeads = col==="leads" ? rows("leads").filter(l=>l.status==="Converted") : [];
+  if (col==="leads" && !f.showConverted) list = list.filter(l=>l.status!=="Converted");
   if (f.status) list = list.filter(d=> Array.isArray(f.status) ? f.status.includes(d.status||d.stage) : (d.status||d.stage)===f.status);
   if (f.owner)  list = list.filter(d=>d.ownerId===f.owner);
   if (col==="activities" && f.due==="open") list = list.filter(d=>d.status!=="Done");
@@ -2639,6 +2645,9 @@ function viewList(col){
       <option value="">All customer types</option>
       ${SCHEMAS.accounts.fields.find(x=>x.k==="type").opts.map(o=>opt(o,f.acctType)).join("")}
     </select>`:""}
+    ${col==="leads" && convertedLeads.length ? `<button class="btn sm" data-filter-toggle="showConverted" title="Converted leads are already Customers — this just lets you glance back">
+      ${f.showConverted ? "Hide converted" : `Show converted (${convertedLeads.length})`}
+    </button>`:""}
     <div style="flex:1"></div>
     <button class="btn" data-import="${col}" title="Paste from Excel or upload a CSV">Import</button>
     ${col==="quotations" ? seriesBadge() : ""}
@@ -4394,6 +4403,11 @@ function wireView(){
     const col = el.dataset.col || (state.route==="pipeline" ? "deals" : state.route);
     const f = state.filters[col] = state.filters[col] || {};
     f[el.dataset.filter] = el.value; render();
+  });
+  v.querySelectorAll("[data-filter-toggle]").forEach(el=> el.onclick = ()=>{
+    const f = state.filters[state.route] = state.filters[state.route] || {};
+    const key = el.dataset.filterToggle;
+    f[key] = !f[key]; render();
   });
   v.querySelectorAll("[data-pipe]").forEach(el=> el.onclick = ()=>{
     state.filters.pipeMode = el.dataset.pipe; render();
