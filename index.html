@@ -5206,10 +5206,10 @@ function iqQuoteRow(it, ii, s, supIdx, lowest){
   const priceVal = (raw === "" || raw === null || raw === undefined) ? "" : raw;
   const isWinner = it.winnerIdx === supIdx;
   const isLowest = checked && lowest!=null && isQuoted(raw) && Number(raw)===lowest;
-  return `<div class="iq-qrow" data-item="${it._id}" data-supidx="${supIdx}" style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line-2);flex-wrap:wrap">
-    <label style="display:flex;align-items:center;gap:7px;flex:1 1 auto;min-width:120px;font-size:12.5px;cursor:pointer">
-      <input type="checkbox" data-quote-chk${checked?" checked":""}>
-      <span>${String(ii+1).padStart(2,"0")} — ${esc(it.desc||"Item "+(ii+1))}</span>
+  return `<div class="iq-qrow" data-item="${it._id}" data-supidx="${supIdx}" style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid var(--line-2);flex-wrap:wrap">
+    <label style="display:flex;align-items:flex-start;gap:7px;flex:1 1 auto;min-width:120px;font-size:12.5px;line-height:1.4;cursor:pointer">
+      <input type="checkbox" data-quote-chk${checked?" checked":""} style="flex:none;margin-top:2px">
+      <span style="text-align:left">${String(ii+1).padStart(2,"0")} — ${esc(it.desc||"Item "+(ii+1))}</span>
     </label>
     <input type="number" data-quote-price min="0" step="any" placeholder="Price" value="${esc(priceVal)}"
       style="width:88px;flex:none${checked?"":";visibility:hidden"}">
@@ -5346,10 +5346,20 @@ function openInquiryForm(id, preset){
 
   function refreshContactOptions(){
     const type = $("#iq-reltype").value, relId = $("#iq-relid").value;
-    let list = rows("contacts");
+    const cur = $("#iq-contact").value || d.contactId || "";
+    // Contacts are the strict case: only ones belonging to a customer this
+    // person actually owns/handles — not the shared-registry visibility
+    // Accounts/Leads get. A contact with no account on file falls back to
+    // its own owner. The current selection is always kept so editing an
+    // older inquiry never blanks out or loses that field.
+    const myAccountIds = new Set(rows("accounts")
+      .filter(a=> a.ownerId===myUid() || a.createdBy===myUid())
+      .map(a=>a.id));
+    const handles = c => c.accountId ? myAccountIds.has(c.accountId)
+                                      : (c.ownerId===myUid() || c.createdBy===myUid());
+    let list = rows("contacts").filter(c=> handles(c) || c.id===cur);
     if (type === "Account" && relId) list = list.filter(c=>c.accountId===relId);
     list = list.sort((a,b)=> recordTitle("contacts",a.id).localeCompare(recordTitle("contacts",b.id)));
-    const cur = $("#iq-contact").value || d.contactId || "";
     $("#iq-contact").innerHTML = `<option value="">—</option>` +
       list.map(c=>`<option value="${c.id}"${c.id===cur?" selected":""}>${esc(recordTitle("contacts",c.id))}</option>`).join("");
     if (type === "Account" && list.length === 1 && !cur) $("#iq-contact").value = list[0].id;
