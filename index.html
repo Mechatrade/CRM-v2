@@ -4420,7 +4420,7 @@ function wireView(){
         el.dataset.was = val;
         if (val === "Rescheduled"){
           toast("Marked Rescheduled — update the due date");
-          openForm("activities", id);
+          openForm("activities", id, { __simpleTask: true });
         } else {
           toast("Updated");
         }
@@ -4765,8 +4765,11 @@ function fieldHTML(col,f,d,isNew){
   if (f.type === "computed") return "";
   // A brand-new task is inherently "New" with nothing to report yet — no
   // point asking for Task Status/Outcome/Outcome Notes/Next Action before
-  // the task has actually been worked. Those show up once you edit it later.
-  if (f.hideOnCreate && isNew) return "";
+  // the task has actually been worked. Those show up once you edit it later
+  // — except the Rescheduled flow, which asks for the same clean set of
+  // fields (via preset.__simpleTask) since it's really just "adjust the
+  // date," not a full status/outcome review.
+  if (f.hideOnCreate && (isNew || d?.__simpleTask)) return "";
   if (f.system){
     if (isNew) return "";   // nothing exists yet to show or type into
     const domId = "f-"+f.k, locked = !isAdmin();
