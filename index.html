@@ -1178,10 +1178,10 @@ const SCHEMAS = {
       { k:"priority",    l:"Priority",       type:"select", opts:["Low","Normal","High","Urgent"], def:"Normal", table:true },
       { k:"dueDate",     l:"Due Date",       type:"date",   table:true },
       { k:"dueTime",     l:"Due Time",       type:"time" },
-      { k:"status",      l:"Task Status",    type:"select", opts:["Open","In Progress","Done","Cancelled"], def:"Open", table:true },
-      { k:"outcome",     l:"Outcome",        type:"select", opts:["—","Successful","No Answer","Rescheduled","Not Interested","Needs Follow-up","Other"], def:"—" },
-      { k:"outcomeNotes",l:"Outcome Notes",  type:"textarea", full:true },
-      { k:"nextAction",  l:"Next Action",    type:"text" }
+      { k:"status",      l:"Task Status",    type:"select", opts:["New","Ongoing","Rescheduled","Completed"], def:"New", table:true, hideOnCreate:true },
+      { k:"outcome",     l:"Outcome",        type:"select", opts:["—","Successful","No Answer","Rescheduled","Not Interested","Needs Follow-up","Other"], def:"—", hideOnCreate:true },
+      { k:"outcomeNotes",l:"Outcome Notes",  type:"textarea", full:true, hideOnCreate:true },
+      { k:"nextAction",  l:"Next Action",    type:"text", hideOnCreate:true }
     ]
   },
   campaigns: {
@@ -2320,6 +2320,7 @@ function pillClass(v){
     "New":"info","Contacted":"info","Qualified":"accent","Converted":"accent","Unqualified":"","Engaged":"warn","Unresponsive":"",
     "Won":"accent","Lost":"alert","Proposal Sent":"warn","Negotiation":"warn",
     "Open":"warn","Done":"info","Active":"accent","Planned":"info","Completed":"","Paused":"warn",
+    "Ongoing":"warn","Rescheduled":"warn",
     "Draft":"","Sent":"info","Viewed":"warn","Approved":"accent","Declined":"alert","Expired":"alert",
     "High":"alert","Medium":"warn","Low":"",
     "Supplier":"info","Contractor":"info","Consultant":"info","Manufacturer":"info",
@@ -2468,7 +2469,7 @@ function viewGenericDashboard(){
   const wonVal = wonMonth.reduce((s,d)=>s+Number(d.value||0),0);
   const target = Number(state.profile.monthlyTarget||0);
   const workable = rows("leads").filter(l=>["New","Contacted","Engaged"].includes(l.status));
-  const acts = rows("activities").filter(a=>a.status!=="Done");
+  const acts = rows("activities").filter(a=>a.status!=="Completed");
   const overdue = acts.filter(a=>daysUntil(a.dueDate)!==null && daysUntil(a.dueDate)<0);
   const dueSoon = acts.filter(a=>{const n=daysUntil(a.dueDate); return n!==null && n>=0 && n<=7;})
                       .sort((a,b)=>toDate(a.dueDate)-toDate(b.dueDate));
@@ -2597,7 +2598,7 @@ function viewList(col){
   if (col==="leads" && !f.showConverted) list = list.filter(l=>l.status!=="Converted");
   if (f.status) list = list.filter(d=> Array.isArray(f.status) ? f.status.includes(d.status||d.stage) : (d.status||d.stage)===f.status);
   if (f.owner)  list = list.filter(d=>d.ownerId===f.owner);
-  if (col==="activities" && f.due==="open") list = list.filter(d=>d.status!=="Done");
+  if (col==="activities" && f.due==="open") list = list.filter(d=>d.status!=="Completed");
   if (col==="deals" && f.oppType) list = list.filter(d=>(d.opportunityType||"Direct")===f.oppType);
   if (col==="deals" && f.sector)  list = list.filter(d=>(d.sector||"Private")===f.sector);
   if (col==="accounts" && f.acctType) list = list.filter(d=>d.type===f.acctType);
@@ -2692,7 +2693,7 @@ function viewList(col){
         <td class="row-act">
           ${canWrite(d) ? `
             ${col==="leads" && d.status!=="Converted" ? `<button class="btn sm" data-convert="${d.id}">Convert</button> `:""}
-            ${col==="activities" && d.status!=="Done" ? `<button class="btn sm" data-donebtn="${d.id}">Done</button> `:""}
+            ${col==="activities" && d.status!=="Completed" ? `<button class="btn sm" data-donebtn="${d.id}">Done</button> `:""}
             ${col==="inquiries" ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
             ${col==="costing" && d.status==="Approved" ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
             <button class="btn sm" data-edit="${col}:${d.id}">Edit</button>`
@@ -2749,7 +2750,7 @@ function seriesAudit(){
 function openQuoteCount(){            // declared, so the NAV table can use it
   return rows("quotations").filter(q=>["Draft","Sent","Viewed"].includes(quoteStatus(q))).length;
 }
-function openTasks(){ return rows("activities").filter(a=>a.status!=="Done" && a.dueDate); }
+function openTasks(){ return rows("activities").filter(a=>a.status!=="Completed" && a.dueDate); }
 function isToday(v){ const d=toDate(v); if(!d) return false;
   const n=new Date(); return d.toDateString() === n.toDateString(); }
 
@@ -2958,7 +2959,7 @@ function viewSalesDashboard(){
 function viewTasks(){
   const f = state.filters.tasks || (state.filters.tasks = { tab:"prospective" });
   const all = rows("activities").filter(a=>matches(a,"activities"));
-  const openA = all.filter(a=>a.status!=="Done");
+  const openA = all.filter(a=>a.status!=="Completed");
   const buckets = {
     // Every open task in one place, regardless of date — the default,
     // "what's still ahead of me" view. The date-bucketed tabs alongside it
@@ -2973,7 +2974,7 @@ function viewTasks(){
     upcoming: openA.filter(a=>{const n=daysUntil(a.dueDate); return n!==null && n>0;})
                    .sort((a,b)=>toDate(a.dueDate)-toDate(b.dueDate)),
     unscheduled: openA.filter(a=>!a.dueDate),
-    done:     all.filter(a=>a.status==="Done").sort((a,b)=>toDate(b.updatedAt)-toDate(a.updatedAt)).slice(0,50)
+    done:     all.filter(a=>a.status==="Completed").sort((a,b)=>toDate(b.updatedAt)-toDate(a.updatedAt)).slice(0,50)
   };
   const tabs = [["prospective","Prospective Tasks"],["overdue","Overdue"],["today","Today"],["upcoming","Upcoming"],["unscheduled","No date"],["done","Completed"]];
   const list = buckets[f.tab] || [];
@@ -2984,13 +2985,13 @@ function viewTasks(){
   </div>
   <div class="card">
     ${list.length ? `<div class="tbl-wrap"><table>
-      <thead><tr><th style="width:30px"></th><th>Task</th><th>Type</th><th>Related to</th><th>Due</th>
+      <thead><tr><th>Status</th><th>Task</th><th>Type</th><th>Related to</th><th>Due</th>
         ${isManager()?"<th>Owner</th>":""}<th></th></tr></thead>
       <tbody>${list.map(a=>{
         const n = daysUntil(a.dueDate);
         const late = n!==null && n<0;
         return `<tr>
-          <td>${a.status==="Done"?`<span class="pill accent">✓</span>`:`<input type="checkbox" data-done="${a.id}" title="Mark done">`}</td>
+          <td>${taskStatusSelect(a)}</td>
           <td><span class="lnk" data-open="activities:${a.id}">${esc(a.subject)}</span></td>
           <td>${pillFor("type",a.type)}</td>
           <td style="font-size:12.5px">${esc(refLabel("dynamic",a.relatedId,a))}</td>
@@ -3003,6 +3004,20 @@ function viewTasks(){
       : `<div class="empty"><strong>Nothing here</strong>${
           f.tab==="overdue" ? "You're on top of everything." : "No tasks in this bucket."}</div>`}
   </div>`;
+}
+/* The Status column right in the My Tasks list — no need to open Edit just
+   to see or change where a task stands. New/Ongoing save immediately.
+   Rescheduled saves immediately too, then opens the task so the due date
+   can actually be moved. Completed never saves directly — it always routes
+   through the outcome-required popup (see openMarkDoneModal), and reverts
+   the dropdown if that's cancelled. */
+function taskStatusSelect(a){
+  const opts = ["New","Ongoing","Rescheduled","Completed"];
+  const legacy = a.status && !opts.includes(a.status) ? [a.status] : [];
+  const tone = { New:"info", Ongoing:"warn", Rescheduled:"warn", Completed:"accent" }[a.status] || "";
+  return `<select class="inline-sel ${tone}" data-taskstatus="${a.id}" title="Change task status">
+    ${[...opts,...legacy].map(o=>`<option value="${esc(o)}"${o===a.status?" selected":""}>${esc(o)}</option>`).join("")}
+  </select>`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -3070,7 +3085,7 @@ function viewCalendar(){
         const isNow = isThisMonth && today.getDate()===d;
         return `<div class="cal-cell${isNow?" now":""}${f.day===d?" sel":""}" data-day="${d}">
           <div class="cal-n">${d}</div>
-          ${items.slice(0,3).map(a=>`<div class="cal-ev ${TYPE_TONE[a.type]||""}${["Done","Published"].includes(a.status)?" done":""}"
+          ${items.slice(0,3).map(a=>`<div class="cal-ev ${TYPE_TONE[a.type]||""}${["Completed","Published"].includes(a.status)?" done":""}"
             title="${esc(a.subject)}">${esc(a.subject)}</div>`).join("")}
           ${items.length>3?`<div class="cal-more">+${items.length-3} more</div>`:""}
         </div>`;
@@ -3087,7 +3102,7 @@ function viewCalendar(){
           <div style="font-size:11.5px;color:var(--muted)">${esc(["quotations","costing"].includes(a._c) ? recordTitle("accounts",a.accountId) : refLabel("dynamic",a.relatedId,a))}</div></td>
         ${isManager()?`<td style="font-size:12.5px">${esc(userName(a.ownerId))}</td>`:""}
         <td class="row-act">${a._c && a._c!=="activities" ? pillFor("status",a.status)
-          : a.status==="Done" ? `<span class="pill accent">Done</span>`
+          : a.status==="Completed" ? `<span class="pill accent">Completed</span>`
           : `<button class="btn sm" data-donebtn="${a.id}">Done</button>`}</td>
       </tr>`).join("")}
     </tbody></table></div>
@@ -3470,7 +3485,7 @@ function viewBDDashboard(){
   const tenders = deals.filter(d=>["RFQ","Tender / Bidding"].includes(d.opportunityType) && OPEN_STAGES.includes(d.stage));
   const open = deals.filter(d=>OPEN_STAGES.includes(d.stage));
   const forecast = open.reduce((s,d)=>s+Number(d.value||0)*stageProb(d.stage)/100,0);
-  const meetings = acts.filter(a=>a.status!=="Done" && ["Meeting","Presentation","Site Visit"].includes(a.type)
+  const meetings = acts.filter(a=>a.status!=="Completed" && ["Meeting","Presentation","Site Visit"].includes(a.type)
     && daysUntil(a.dueDate) !== null && daysUntil(a.dueDate) >= 0)
     .sort((a,b)=>toDate(a.dueDate)-toDate(b.dueDate));
   const prospects = accts.filter(a=>a.type==="Prospect");
@@ -3902,7 +3917,7 @@ function salesReportTab(){
 
   const acts = rows("activities");
   const actByOwner = new Map();
-  acts.forEach(a=>{ const o=actByOwner.get(a.ownerId)||{done:0,open:0}; a.status==="Done"?o.done++:o.open++; actByOwner.set(a.ownerId,o); });
+  acts.forEach(a=>{ const o=actByOwner.get(a.ownerId)||{done:0,open:0}; a.status==="Completed"?o.done++:o.open++; actByOwner.set(a.ownerId,o); });
 
   return `
   <div class="kpis">
@@ -4387,6 +4402,34 @@ function wireView(){
     };
     el.dataset.was = el.value;
   });
+  v.querySelectorAll("[data-taskstatus]").forEach(el=>{
+    el.onclick = e=> e.stopPropagation();
+    el.dataset.was = el.value;
+    el.onchange = async ()=>{
+      const id = el.dataset.taskstatus;
+      const val = el.value;
+      if (val === "Completed"){
+        // Never saved straight from the dropdown — always routes through
+        // the required outcome popup, which reverts this back on cancel.
+        el.value = el.dataset.was;
+        openMarkDoneModal(id, ()=>{ el.value = "Completed"; el.dataset.was = "Completed"; });
+        return;
+      }
+      try{
+        await updateDoc(doc(db,"activities",id), { status: val, updatedAt: serverTimestamp() });
+        el.dataset.was = val;
+        if (val === "Rescheduled"){
+          toast("Marked Rescheduled — update the due date");
+          openForm("activities", id);
+        } else {
+          toast("Updated");
+        }
+      }catch(e){
+        el.value = el.dataset.was;
+        toast(e.code === "permission-denied" ? "You can't change this one" : e.message, true);
+      }
+    };
+  });
   v.querySelectorAll("[data-setstatus]").forEach(el=>{
     el.onclick = e=> e.stopPropagation();
     el.onchange = async ()=>{
@@ -4540,11 +4583,13 @@ async function moveDeal(id, stage){
   catch(e){ toast(e.message,true); }
 }
 /* A task can't just be silently ticked off — completing it means saying
-   what happened. This popup is the only path to status "Done": pick an
-   outcome (or describe your own via "Other"), write what happened, and
+   what happened. This popup is the only path to status "Completed": pick
+   an outcome (or describe your own via "Other"), write what happened, and
    only then does the task actually close. Triggered from every "Done"
-   checkbox/button across Tasks, Calendar, and dashboard widgets alike. */
-function openMarkDoneModal(id){
+   checkbox/button across Tasks, Calendar, and dashboard widgets alike, and
+   from the Task Status dropdown when "Completed" is picked. onSaved, if
+   given, runs after a successful save (e.g. to update a dropdown in place). */
+function openMarkDoneModal(id, onSaved){
   const d = state.data.activities.get(id); if(!d) return;
   const OUTCOMES = ["Successful","No Answer","Rescheduled","Not Interested","Needs Follow-up","Other"];
   modal(`
@@ -4589,12 +4634,13 @@ function openMarkDoneModal(id){
     $("#md-save").disabled = true;
     try{
       await tracked(updateDoc(doc(db,"activities",id), {
-        status: "Done",
+        status: "Completed",
         outcome: outcomeVal,
         outcomeNotes: outcomeVal==="Other" ? `Other: ${otherText}\n\n${notes}` : notes,
         completedAt: serverTimestamp(), updatedAt: serverTimestamp()
       }));
       closeModal(true); toast("Task marked done");
+      onSaved?.();
     }catch(e){
       $("#md-save").disabled = false;
       box.textContent = e.message; box.classList.remove("hidden");
@@ -4717,6 +4763,10 @@ function escClose(e){ if (e.key === "Escape") closeModal(); }
 
 function fieldHTML(col,f,d,isNew){
   if (f.type === "computed") return "";
+  // A brand-new task is inherently "New" with nothing to report yet — no
+  // point asking for Task Status/Outcome/Outcome Notes/Next Action before
+  // the task has actually been worked. Those show up once you edit it later.
+  if (f.hideOnCreate && isNew) return "";
   if (f.system){
     if (isNew) return "";   // nothing exists yet to show or type into
     const domId = "f-"+f.k, locked = !isAdmin();
