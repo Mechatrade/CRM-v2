@@ -2277,10 +2277,111 @@ function ownerOptions(sel){
 /* ------------------------------------------------------------------ */
 function viewDashboard(){
   const d = actingDept();
-  if (d === "Sales") return viewSalesDashboard();
-  if (d === "Business Development") return viewBDDashboard();
+  // Inquiries/Costing don't exist in Marketing's menu at all, and the admin's
+  // own "All departments" view has no single owner to scope this to — so the
+  // personal snapshot only makes sense for Sales and Business Development,
+  // the two departments that actually run this workflow.
+  const mine = ["Sales","Business Development"].includes(d) ? myQuotationSnapshot() : "";
+  if (d === "Sales") return mine + viewSalesDashboard();
+  if (d === "Business Development") return mine + viewBDDashboard();
   if (d === "Marketing") return viewMarketingDashboard();
   return viewGenericDashboard();
+}
+/* How long a sent quotation has been waiting, and what to do about it —
+   used both for the notification tag and the card's sort order. Ranges
+   are inclusive of their start day; anything from 10 days on is the same
+   "close it out" tag regardless of how much further it drifts. */
+function quoteFollowUp(days){
+  if (days == null)     return null;
+  if (days <= 2)  return { emoji:"🟢", label:"New Quotation",      hint:"Give the customer time to review." };
+  if (days === 3) return { emoji:"🟡", label:"Warm Follow-Up",     hint:"Friendly check-in — confirm they got it." };
+  if (days === 4) return { emoji:"🟠", label:"Active Follow-Up",   hint:"Ask for feedback or a decision." };
+  if (days <= 9)  return { emoji:"🔴", label:"Urgent Follow-Up",   hint:"This needs attention — find out where it stands." };
+  return              { emoji:"⚫", label:"Re-engage / Closing",  hint:"Get a clear yes, no, or next step." };
+}
+/* A private, per-user snapshot of the Inquiry → Costing → Quotation flow
+   (Sales & Quotation Management). Everything here is scoped strictly to
+   records this signed-in person owns — never the department's or another
+   rep's — so it sits safely on top of any department dashboard below it.
+   Card counts, the pipeline funnel, and the follow-up list all read from
+   the same three collections so the numbers never disagree with each other. */
+function myQuotationSnapshot(){
+  const uid = myUid();
+  const myInquiries = rows("inquiries").filter(d=>d.ownerId===uid);
+  const myCosting   = rows("costing").filter(d=>d.ownerId===uid);
+  const myQuotes    = rows("quotations").filter(d=>d.ownerId===uid);
+  const ms = monthStart();
+
+  const newInquiries = myInquiries.filter(d=>d.status==="Open");
+  const quotedCostingIds = new Set(myQuotes.map(q=>q.costingId).filter(Boolean));
+  const forQuotation = myCosting.filter(c=>c.status==="Approved" && !quotedCostingIds.has(c.id));
+  const pending = myQuotes.filter(q=>["Sent","Viewed"].includes(q.status));
+  const pendingValue = pending.reduce((s,q)=>s+Number(q.total||0),0);
+  const wonMonth = myQuotes.filter(q=>q.status==="Approved" && toDate(q.approvedAt) >= ms);
+  const wonValue = wonMonth.reduce((s,q)=>s+Number(q.total||0),0);
+  const lostMonth = myQuotes.filter(q=>q.status==="Declined" && toDate(q.declinedAt) >= ms);
+  const lostValue = lostMonth.reduce((s,q)=>s+Number(q.total||0),0);
+
+  const kpi = (label, val, foot, col, status) => `
+    <div class="kpi" data-kpi='${esc(JSON.stringify({col, status, owner:uid}))}' style="cursor:pointer">
+      <div class="lbl">${esc(label)}</div>
+      <div class="val mono">${val}</div>
+      <div class="foot">${esc(foot)}</div>
+    </div>`;
+
+  const funnelStages = ["Open","Noted","Approved","Quoted","Closed - Won"];
+  const funnelLabels = { "Open":"New Inquiry", "Noted":"Noted", "Approved":"Approved", "Quoted":"Quoted", "Closed - Won":"Won" };
+  const funnelMax = Math.max(...funnelStages.map(s=>myInquiries.filter(i=>i.status===s).length), 1);
+
+  const needsFollowUp = pending
+    .map(q=>({ q, days: daysSince(q.issueDate) }))
+    .filter(x=>x.days!=null)
+    .sort((a,b)=>b.days-a.days);
+
+  return `
+  <div class="eyebrow" style="margin-bottom:8px">Your Sales &amp; Quotation Management</div>
+  <div class="kpis">
+    ${kpi("New Inquiries", newInquiries.length, "awaiting a first look", "inquiries", "Open")}
+    ${kpi("For Quotation", forQuotation.length, "costing approved, not yet quoted", "costing", "Approved")}
+    ${kpi("Pending Quotations", pending.length, "sent, awaiting a decision", "quotations", ["Sent","Viewed"])}
+    ${kpi("Quotation Value", shortMoney(pendingValue), "across pending quotations", "quotations", ["Sent","Viewed"])}
+    ${kpi("Won This Month", shortMoney(wonValue), `${wonMonth.length} approved`, "quotations", "Approved")}
+    ${kpi("Lost This Month", shortMoney(lostValue), `${lostMonth.length} declined`, "quotations", "Declined")}
+  </div>
+
+  <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:14px">
+    <div class="card">
+      <div class="card-h"><h3>Your pipeline</h3><div class="spacer"></div>
+        <button class="btn sm" data-go="inquiries">All inquiries</button></div>
+      <div class="bars">
+        ${funnelStages.map(s=>{
+          const n = myInquiries.filter(i=>i.status===s).length;
+          return `<div class="bar-row"><div class="nm">${esc(funnelLabels[s])}</div>
+            <div class="bar-track"><div class="bar-fill info" style="width:${n/funnelMax*100}%"></div></div>
+            <div class="fig">${n}</div></div>`;
+        }).join("")}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-h"><h3>Needs follow-up</h3><div class="spacer"></div>
+        <span class="eyebrow">${needsFollowUp.length} pending</span></div>
+      ${needsFollowUp.length ? `<div class="tbl-wrap"><table><tbody>
+        ${needsFollowUp.slice(0,8).map(({q,days})=>{
+          const tag = quoteFollowUp(days);
+          return `<tr>
+            <td><span class="lnk" data-open="quotations:${q.id}">${esc(q.quoteNo||q.title||"Quotation")}</span>
+              <div style="font-size:11.5px;color:var(--muted)">${esc(recordTitle("accounts",q.accountId))}</div></td>
+            <td class="num">${money(q.total)}</td>
+            <td class="num"><span class="pill" title="${esc(tag.hint)}">${tag.emoji} ${esc(tag.label)}</span>
+              <div style="font-size:10.5px;color:var(--muted);margin-top:2px">${days}d since sent</div></td>
+          </tr>`;
+        }).join("")}
+      </tbody></table></div>` : `<div class="empty"><strong>Nothing pending</strong>No sent quotation is waiting on a decision right now.</div>`}
+    </div>
+  </div>
+  <div style="margin:18px 0"></div>
+  `;
 }
 function viewGenericDashboard(){
   const deals  = rows("deals");
@@ -2413,7 +2514,7 @@ function viewList(col){
   if(!S) return `<div class="empty"><strong>Nothing here</strong>That screen doesn't exist.</div>`;
   const f = state.filters[col] || {};
   let list = rows(col).filter(d=>matches(d,col));
-  if (f.status) list = list.filter(d=>(d.status||d.stage)===f.status);
+  if (f.status) list = list.filter(d=> Array.isArray(f.status) ? f.status.includes(d.status||d.stage) : (d.status||d.stage)===f.status);
   if (f.owner)  list = list.filter(d=>d.ownerId===f.owner);
   if (col==="activities" && f.due==="open") list = list.filter(d=>d.status!=="Done");
   if (col==="deals" && f.oppType) list = list.filter(d=>(d.opportunityType||"Direct")===f.oppType);
@@ -4144,6 +4245,14 @@ function wireView(){
     const [c,id] = el.dataset.edit.split(":"); openForm(c,id);
   });
   v.querySelectorAll("[data-go]").forEach(el=> el.onclick = ()=> setRoute(el.dataset.go));
+  // Clickable KPI cards on the dashboard: pre-set that menu's filter (status
+  // and/or "just mine"), then jump straight to the already-filtered list —
+  // so the number on the card and what you land on always agree.
+  v.querySelectorAll("[data-kpi]").forEach(el=> el.onclick = ()=>{
+    const spec = JSON.parse(el.dataset.kpi);
+    state.filters[spec.col] = { ...(state.filters[spec.col]||{}), status: spec.status ?? undefined, owner: spec.owner ?? undefined };
+    setRoute(spec.col);
+  });
   v.querySelectorAll("[data-convert]").forEach(el=> el.onclick = ()=> openConvert(el.dataset.convert));
   v.querySelectorAll("[data-proceed]").forEach(el=> el.onclick = e=>{
     e.stopPropagation();
@@ -4793,7 +4902,7 @@ function openDetail(col,id){
       </div>
     </div>
     <div class="modal-f">
-      ${col==="leads" && d.status!=="Converted" ? `<button class="btn" id="conv">Convert to deal</button>`:""}
+      ${col==="leads" && d.status!=="Converted" ? `<button class="btn" id="conv">Convert to customer</button>`:""}
       <div class="spacer"></div>
       ${canWrite(d) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
       <button class="btn" data-close>Close</button>
@@ -4818,7 +4927,7 @@ function openDetail(col,id){
   });
 }
 
-/* ---- convert a lead into account + contact + deal ---- */
+/* ---- convert a lead into an account + contact (Customer) ---- */
 function openConvert(leadId){
   const l = state.data.leads.get(leadId); if(!l) return;
   const accts = rows("accounts").sort((a,b)=>(a.name||"").localeCompare(b.name||""));
@@ -4828,7 +4937,7 @@ function openConvert(leadId){
     <div class="modal-b">
       <div id="form-err" class="err hidden"></div>
       <p style="color:var(--muted);margin-top:0;font-size:13px">
-        This creates an account, a contact, and an open deal from <strong>${esc(l.company)}</strong>, then marks the lead converted.</p>
+        This creates a customer account (and a contact, if you fill one in) from <strong>${esc(l.company)}</strong>, then marks the lead converted.</p>
       <div class="fgrid">
         <div class="field full">
           <label for="c-acct">Account</label>
@@ -4837,14 +4946,7 @@ function openConvert(leadId){
         </div>
         <div class="field"><label for="c-first">Contact first name</label><input id="c-first" value="${esc(names[0]||"")}"></div>
         <div class="field"><label for="c-last">Contact last name</label><input id="c-last" value="${esc(names.slice(1).join(" "))}"></div>
-        <div class="field full"><label for="c-title">Deal name <span class="req">*</span></label>
-          <input id="c-title" value="${esc(l.company)} opportunity"></div>
-        <div class="field"><label for="c-val">Deal value <span class="req">*</span></label>
-          <input id="c-val" type="number" min="0" step="any" value="${esc(l.estValue||"")}"></div>
-        <div class="field"><label for="c-stage">Stage</label>
-          <select id="c-stage">${OPEN_STAGES.map(s=>opt(s,"Qualified")).join("")}</select></div>
-        <div class="field"><label for="c-close">Expected close</label><input id="c-close" type="date"></div>
-        <div class="field"><label for="c-owner">Deal owner</label>
+        <div class="field"><label for="c-owner">Account owner</label>
           <select id="c-owner"${isManager()?"":" disabled"}>
             ${isManager()?ownerOptions(l.ownerId||myUid()):`<option value="${myUid()}">${esc(state.profile.displayName||"You")}</option>`}
           </select></div>
@@ -4855,8 +4957,6 @@ function openConvert(leadId){
       <button class="btn pri" id="do-conv">Convert lead</button></div>`, true);
 
   $("#do-conv").onclick = async ()=>{
-    const title = $("#c-title").value.trim(), val = Number($("#c-val").value||0);
-    if(!title || !val){ const b=$("#form-err"); b.textContent="A deal needs a name and a value."; b.classList.remove("hidden"); return; }
     $("#do-conv").disabled = true;
     const ownerId = $("#c-owner").value || myUid();
     const dept = state.users.get(ownerId)?.department || state.profile.department;
@@ -4870,22 +4970,14 @@ function openConvert(leadId){
         });
         accountId = a.id;
       }
-      let contactId = null;
       if ($("#c-first").value.trim() || $("#c-last").value.trim()){
-        const c = await addDoc(collection(db,"contacts"), {
+        await addDoc(collection(db,"contacts"), {
           ...base, firstName:$("#c-first").value.trim(), lastName:$("#c-last").value.trim(),
           accountId, jobTitle:l.jobTitle||null, email:l.email||null, phone:l.phone||null
         });
-        contactId = c.id;
       }
-      const stage = $("#c-stage").value;
-      await addDoc(collection(db,"deals"), {
-        ...base, title, accountId, contactId, value:val, stage, probability:stageProb(stage),
-        expectedCloseDate: $("#c-close").value || null, source:l.source||null, campaignId:l.campaignId||null,
-        sourcedBy: l.createdBy || myUid(), leadId: leadId, stageChangedAt: serverTimestamp()
-      });
       await updateDoc(doc(db,"leads",leadId), { status:"Converted", convertedAt:serverTimestamp(), updatedAt:serverTimestamp() });
-      closeModal(true); toast("Lead converted"); setRoute("pipeline");
+      closeModal(true); toast("Lead converted to customer"); setRoute("accounts");
     }catch(e){
       $("#do-conv").disabled = false;
       const b=$("#form-err"); b.textContent=e.message; b.classList.remove("hidden");
