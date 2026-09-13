@@ -1046,6 +1046,17 @@ const ACCOUNT_STATUS_GUIDE = {
   "Reactivation": { emoji:"🟣", condition:"Previously inactive/dormant customer is currently being contacted to restore the business relationship.", example:"Salesperson is reaching out to an old customer with new products." },
   "Closed":       { emoji:"⚫", condition:"Account is no longer expected to conduct business with the company.", example:"Company permanently closed or formally requested to stop business." }
 };
+/* Lead Status — where a lead sits in the initial contact/interest cycle,
+   shown as a live guide the same way Account Status is (see fieldHTML's
+   statusGuide handling). No worked example in the source table for these,
+   just the condition. */
+const LEAD_STATUS_GUIDE = {
+  "New":          { emoji:"🆕", condition:"Lead has been added to the CRM but no contact attempt has been made yet." },
+  "Contacted":    { emoji:"📞", condition:"Salesperson has attempted or successfully made initial contact, but the lead has not shown enough interest yet." },
+  "Engaged":      { emoji:"💬", condition:"Lead is responding and communicating with the salesperson and showing some interest." },
+  "Qualified":    { emoji:"⭐", condition:"Lead has a clear need/potential requirement and is considered a legitimate sales opportunity." },
+  "Unresponsive": { emoji:"⚪", condition:"Salesperson has made multiple contact attempts but the lead has not responded." }
+};
 const SCHEMAS = {
   leads: {
     label:"Lead", plural:"Leads", icon:"◔", titleField:"company",
@@ -1055,15 +1066,14 @@ const SCHEMAS = {
       { k:"jobTitle",      l:"Job title",      type:"text" },
       { k:"email",         l:"Email",          type:"email",    table:true },
       { k:"phone",         l:"Phone",          type:"tel",      table:true },
-      { k:"status",        l:"Status",         type:"select",   opts:["New","Contacted","Qualified","Unqualified","Converted"], def:"New", table:true },
+      { k:"status",        l:"Status",         type:"select",   opts:["New","Contacted","Engaged","Qualified","Unresponsive"], def:"New", table:true, statusGuide:LEAD_STATUS_GUIDE },
       { k:"rating",        l:"Rating",         type:"select",   opts:["Hot","Warm","Cold"], def:"Warm", table:true },
       { k:"source",        l:"Source",         type:"select",   optsFrom:"sources" },
-      { k:"campaignId",    l:"Campaign",       type:"ref",      refTo:"campaigns" },
-      { k:"estValue",      l:"Estimated value",type:"money",    table:true },
-      { k:"nextAction",    l:"Next action",    type:"text" },
-      { k:"nextActionDate",l:"Follow up on",   type:"date",     table:true },
+      { k:"leadRequirements", l:"Lead Requirements", type:"select",
+        opts:["No Special Requirement","Need Accreditation","PO First","Accreditation + PO First"],
+        def:"No Special Requirement", table:true },
       { k:"ownerId",       l:"Owner",          type:"ref",      refTo:"users", table:true, assignOnly:true },
-      { k:"notes",         l:"Notes",          type:"textarea", full:true }
+      { k:"notes",         l:"Notes",          type:"textarea", full:true, table:true }
     ]
   },
   accounts: {
@@ -1899,7 +1909,7 @@ function salesNavGroups(dept){
   return [
     { group:"Customers & Leads", depts, items:[
       { id:"leads",    label:"Leads",     icon:"◔", depts,
-        count:()=>rows("leads").filter(l=>!["Converted","Unqualified"].includes(l.status)).length },
+        count:()=>rows("leads").filter(l=>!["Converted","Unresponsive"].includes(l.status)).length },
       { id:"accounts", label:"Customers", icon:"▣", depts },
       { id:"contacts", label:"Contacts",  icon:"◍", depts }
     ]},
@@ -2168,6 +2178,12 @@ function cell(col,f,d){
   if (f.type === "email" && v) return `<a href="mailto:${esc(v)}">${esc(v)}</a>`;
   if (f.type === "url"   && v) return `<a href="${esc(v)}" target="_blank" rel="noopener">${esc(v)}</a>`;
   if (f.type === "select") return pillFor(f.k, v);
+  if (f.type === "textarea"){
+    if (!v) return "—";
+    const s = String(v);
+    const short = s.length > 70 ? s.slice(0,70)+"…" : s;
+    return `<span title="${esc(s)}" style="white-space:normal;line-height:1.4">${esc(short)}</span>`;
+  }
   return esc(v ?? "—");
 }
 /* Documents are stored as "Label | https://..." lines — no file hosting
@@ -2268,14 +2284,14 @@ function approvalHistoryHTML(d){
    Kept as its own function so any future statusGuide field (not just
    Account Status) renders the note the same way. */
 function statusGuideHTML(entry){
-  return `<strong>${entry.emoji} What this means:</strong> ${esc(entry.condition)}
-    <br><strong>Example:</strong> ${esc(entry.example)}`;
+  return `<strong>${entry.emoji} What this means:</strong> ${esc(entry.condition)}`
+    + (entry.example ? `<br><strong>Example:</strong> ${esc(entry.example)}` : "");
 }
 function pillFor(key,v){
   if(!v) return "—";
   const cls = ({
     "Hot":"alert","Warm":"warn","Cold":"",
-    "New":"info","Contacted":"info","Qualified":"accent","Converted":"accent","Unqualified":"",
+    "New":"info","Contacted":"info","Qualified":"accent","Converted":"accent","Unqualified":"","Engaged":"warn","Unresponsive":"",
     "Won":"accent","Lost":"alert","Proposal Sent":"warn","Negotiation":"warn",
     "Open":"warn","Done":"info","Active":"accent","Planned":"info","Completed":"","Paused":"warn",
     "Draft":"","Sent":"info","Viewed":"warn","Approved":"accent","Declined":"alert","Expired":"alert",
@@ -2422,7 +2438,7 @@ function viewGenericDashboard(){
   const wonMonth = deals.filter(d=>d.stage==="Won" && toDate(d.closedAt||d.updatedAt) >= ms);
   const wonVal = wonMonth.reduce((s,d)=>s+Number(d.value||0),0);
   const target = Number(state.profile.monthlyTarget||0);
-  const workable = rows("leads").filter(l=>["New","Contacted"].includes(l.status));
+  const workable = rows("leads").filter(l=>["New","Contacted","Engaged"].includes(l.status));
   const acts = rows("activities").filter(a=>a.status!=="Done");
   const overdue = acts.filter(a=>daysUntil(a.dueDate)!==null && daysUntil(a.dueDate)<0);
   const dueSoon = acts.filter(a=>{const n=daysUntil(a.dueDate); return n!==null && n>=0 && n<=7;})
@@ -2613,7 +2629,7 @@ function viewList(col){
     ${col==="quotations" && !net.online
       ? `<span class="pill warn" title="Existing quotations can still be edited offline">new quotes need a connection</span>`:""}
     <span class="eyebrow">${list.length} of ${rows(col).length}</span>
-    ${col==="deals"||col==="leads"?`<span class="mono" style="font-size:12px;color:var(--muted)">${money(list.reduce((s,d)=>s+Number(d.value||d.estValue||0),0))}</span>`:""}
+    ${col==="deals"?`<span class="mono" style="font-size:12px;color:var(--muted)">${money(list.reduce((s,d)=>s+Number(d.value||0),0))}</span>`:""}
   </div>`;
 
   if(!list.length) return filterBar + `<div class="card"><div class="empty">
@@ -2873,7 +2889,7 @@ function viewSalesDashboard(){
         ${newLeads.slice(0,7).map(l=>`<tr>
           <td><span class="lnk" data-open="leads:${l.id}">${esc(l.company)}</span>
             <div style="font-size:11.5px;color:var(--muted)">${esc(l.contactName||"")}${l.source?" · "+esc(l.source):""}</div></td>
-          <td class="num">${l.estValue?money(l.estValue):"—"}</td>
+          <td class="num" style="font-size:11.5px;color:var(--muted)">${esc(l.leadRequirements||"—")}</td>
           <td class="num">${pillFor("rating",l.rating)}</td>
         </tr>`).join("")}</tbody></table></div>`
         : `<div class="empty"><strong>No new leads</strong>Everything assigned to you has been contacted.</div>`}
@@ -4593,12 +4609,18 @@ function fieldHTML(col,f,d,isNew){
   if (f.type === "textarea") input = `<textarea id="${id}" data-k="${f.k}">${esc(v)}</textarea>`;
   else if (f.type === "select"){
     const opts = f.optsFrom ? (state.settings[f.optsFrom]||[]) : f.opts;
+    // A stored value from before the option list changed (e.g. a lead
+    // already "Converted", or an older "Unqualified") stays visible and
+    // selected even though it's no longer offered as a new pick — same
+    // spirit as the "deleted record, choose again" fallback for refs, just
+    // for values instead of documents.
+    const legacyOpts = v && !opts.includes(v) ? [v] : [];
     if (f.statusGuide){
       const optLabel = o => f.statusGuide[o] ? `${f.statusGuide[o].emoji} ${o}` : o;
-      input = `<select id="${id}" data-k="${f.k}" data-guide="${f.k}"><option value="">—</option>${opts.map(o=>`<option value="${esc(o)}"${o===v?" selected":""}>${esc(optLabel(o))}</option>`).join("")}</select>
+      input = `<select id="${id}" data-k="${f.k}" data-guide="${f.k}"><option value="">—</option>${[...opts,...legacyOpts].map(o=>`<option value="${esc(o)}"${o===v?" selected":""}>${esc(optLabel(o))}</option>`).join("")}</select>
         <div class="hint guide-note" id="${id}-note" style="display:${v && f.statusGuide[v]?"block":"none"}">${v && f.statusGuide[v] ? statusGuideHTML(f.statusGuide[v]) : ""}</div>`;
     } else {
-      input = `<select id="${id}" data-k="${f.k}"><option value="">—</option>${opts.map(o=>opt(o,v)).join("")}</select>`;
+      input = `<select id="${id}" data-k="${f.k}"><option value="">—</option>${[...opts,...legacyOpts].map(o=>opt(o,v)).join("")}</select>`;
     }
   }
   else if (f.type === "ref"){
