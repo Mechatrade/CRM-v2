@@ -2174,6 +2174,13 @@ function recordTitle(col, id){
 }
 function cell(col,f,d){
   const v = d[f.k];
+  // Accounts are a shared registry (everyone can see the company exists,
+  // to avoid duplicate records) but phone/city are the account owner's own
+  // contact details — those stay visible only to the owner, the account
+  // manager, or a manager of that department, same people canWrite() allows.
+  if (col === "accounts" && ["phone","city"].includes(f.k) && !canWrite(d)){
+    return `<span style="color:var(--faint)" title="Only the account owner or manager can see this">Hidden</span>`;
+  }
   if (f.type === "deptnotes"){
     const all = d.deptNotes || {};
     const keys = Object.keys(all).filter(k=>all[k]);
@@ -4779,8 +4786,12 @@ function myDynamicOptions(type, sel){
   const map = { Lead:"leads", Account:"accounts" };
   const c = map[type] || "leads";
   const mine = r => r.ownerId === myUid() || r.createdBy === myUid();
-  const list = rows(c).filter(r=> mine(r) || r.id===sel)
-    .sort((a,b)=>titleOf(c,a).localeCompare(titleOf(c,b)));
+  let list = rows(c).filter(r=> mine(r) || r.id===sel);
+  // A converted lead has already become an Account — it shouldn't still be
+  // pickable as "Lead" here, or a new inquiry could get pinned to a record
+  // that's no longer where that customer's data actually lives.
+  if (type === "Lead") list = list.filter(r=> r.status !== "Converted" || r.id===sel);
+  list = list.sort((a,b)=>titleOf(c,a).localeCompare(titleOf(c,b)));
   return `<option value="">—</option>` + list.map(r=>`<option value="${r.id}"${r.id===sel?" selected":""}>${esc(titleOf(c,r))}</option>`).join("");
 }
 
@@ -5227,12 +5238,31 @@ function openConvert(leadId){
         });
       }
       await updateDoc(doc(db,"leads",leadId), { status:"Converted", convertedAt:serverTimestamp(), updatedAt:serverTimestamp() });
+      await cascadeLeadConversion(leadId, accountId);
       closeModal(true); toast("Lead converted to customer"); setRoute("accounts");
     }catch(e){
       $("#do-conv").disabled = false;
       const b=$("#form-err"); b.textContent=e.message; b.classList.remove("hidden");
     }
   };
+}
+
+/* When a lead converts, every record that pointed at it via relatedType/
+   relatedId (Customer / Lead Inquiry, Activity log, Follow-ups) is
+   repointed at the resulting Account — so the whole system moves over to
+   where that customer's data now actually lives, rather than leaving
+   things stuck referencing a lead that no longer represents them. Mirrors
+   DEPENDENTS.leads, which tracks the same set of referencing collections. */
+async function cascadeLeadConversion(leadId, accountId){
+  const targets = [["inquiries","relatedId"],["activities","relatedId"],["followups","relatedId"]];
+  for (const [col,key] of targets){
+    const matches = rows(col).filter(r => r.relatedType === "Lead" && r[key] === leadId);
+    for (const r of matches){
+      try{
+        await updateDoc(doc(db,col,r.id), { relatedType:"Account", relatedId:accountId, updatedAt: serverTimestamp() });
+      }catch(e){ console.warn("cascade lead->account", col, r.id, e); }
+    }
+  }
 }
 
 /* Everything that points at a record, so deleting can't leave orphans
@@ -5704,18 +5734,23 @@ function openInquiryForm(id, preset){
   function refreshContactOptions(){
     const type = $("#iq-reltype").value, relId = $("#iq-relid").value;
     const cur = $("#iq-contact").value || d.contactId || "";
-    // Contacts are the strict case: only ones belonging to a customer this
-    // person actually owns/handles — not the shared-registry visibility
-    // Accounts/Leads get. A contact with no account on file falls back to
-    // its own owner. The current selection is always kept so editing an
-    // older inquiry never blanks out or loses that field.
-    const myAccountIds = new Set(rows("accounts")
-      .filter(a=> a.ownerId===myUid() || a.createdBy===myUid())
-      .map(a=>a.id));
-    const handles = c => c.accountId ? myAccountIds.has(c.accountId)
-                                      : (c.ownerId===myUid() || c.createdBy===myUid());
-    let list = rows("contacts").filter(c=> handles(c) || c.id===cur);
-    if (type === "Account" && relId) list = list.filter(c=>c.accountId===relId);
+    let list;
+    if (type === "Account" && relId){
+      // Once a specific customer is chosen, every contact on file for that
+      // customer is fair game — contacts are a shared registry, so this
+      // isn't limited to accounts this person personally owns.
+      list = rows("contacts").filter(c => c.accountId === relId);
+    } else {
+      // Nothing specific picked yet (or this is a Lead inquiry, which has
+      // no account to filter by): keep the list to contacts this person
+      // actually handles, so it isn't the entire company directory.
+      const myAccountIds = new Set(rows("accounts")
+        .filter(a=> a.ownerId===myUid() || a.createdBy===myUid())
+        .map(a=>a.id));
+      const handles = c => c.accountId ? myAccountIds.has(c.accountId)
+                                        : (c.ownerId===myUid() || c.createdBy===myUid());
+      list = rows("contacts").filter(c=> handles(c) || c.id===cur);
+    }
     list = list.sort((a,b)=> recordTitle("contacts",a.id).localeCompare(recordTitle("contacts",b.id)));
     $("#iq-contact").innerHTML = `<option value="">—</option>` +
       list.map(c=>`<option value="${c.id}"${c.id===cur?" selected":""}>${esc(recordTitle("contacts",c.id))}</option>`).join("");
