@@ -4490,6 +4490,21 @@ function dynamicOptions(type, sel){
   const list = rows(c).sort((a,b)=>titleOf(c,a).localeCompare(titleOf(c,b)));
   return `<option value="">—</option>` + list.map(r=>`<option value="${r.id}"${r.id===sel?" selected":""}>${esc(titleOf(c,r))}</option>`).join("");
 }
+/* Same as dynamicOptions, scoped to accounts/leads this person owns or
+   created. Accounts and Leads stay a shared registry everywhere they're
+   managed directly (the CRM menu) — this narrower picker is only for the
+   New/Edit Inquiry form's Customer field, where logging an inquiry should
+   only reach for a customer this person actually handles. The current
+   selection is always kept even if it isn't theirs, so opening an older
+   inquiry to edit never blanks out that field. */
+function myDynamicOptions(type, sel){
+  const map = { Lead:"leads", Account:"accounts" };
+  const c = map[type] || "leads";
+  const mine = r => r.ownerId === myUid() || r.createdBy === myUid();
+  const list = rows(c).filter(r=> mine(r) || r.id===sel)
+    .sort((a,b)=>titleOf(c,a).localeCompare(titleOf(c,b)));
+  return `<option value="">—</option>` + list.map(r=>`<option value="${r.id}"${r.id===sel?" selected":""}>${esc(titleOf(c,r))}</option>`).join("");
+}
 
 /* ---- create / edit record ---- */
 function openForm(col, id, preset){
@@ -5300,7 +5315,7 @@ function openInquiryForm(id, preset){
         <div class="field"><label for="iq-reltype">Inquiry from</label>
           <select id="iq-reltype">${["Lead","Account"].map(o=>opt(o,d.relatedType||"Lead")).join("")}</select></div>
         <div class="field"><label for="iq-relid">Lead / Customer</label>
-          <select id="iq-relid" data-dynamic="1">${dynamicOptions(d.relatedType||"Lead", d.relatedId)}</select></div>
+          <select id="iq-relid" data-dynamic="1">${myDynamicOptions(d.relatedType||"Lead", d.relatedId)}</select></div>
         <div class="field"><label for="iq-contact">Contact person</label>
           <select id="iq-contact"><option value="">—</option></select>
           <span class="hint">Auto-filtered to the selected customer's contacts.</span></div>
@@ -5365,7 +5380,7 @@ function openInquiryForm(id, preset){
     if (type === "Account" && list.length === 1 && !cur) $("#iq-contact").value = list[0].id;
   }
   $("#iq-reltype").addEventListener("change", ()=>{
-    $("#iq-relid").innerHTML = dynamicOptions($("#iq-reltype").value, "");
+    $("#iq-relid").innerHTML = myDynamicOptions($("#iq-reltype").value, "");
     refreshContactOptions();
   });
   $("#iq-relid").addEventListener("change", refreshContactOptions);
@@ -6942,10 +6957,17 @@ function guessField(header, fields){
   return "";
 }
 
-/* Fields a person is allowed to fill from a spreadsheet. */
+/* Fields a person is allowed to fill from a spreadsheet — the ones shown
+   as columns in that menu's main list (table:true) come first and in the
+   same order as the list, so what someone maps during import lines up
+   with what they'll actually see afterward. Other real fields on the
+   record are still importable, just grouped separately below. */
 function importableFields(col){
-  return SCHEMAS[col].fields.filter(f=>
+  const all = SCHEMAS[col].fields.filter(f=>
     !["computed","links"].includes(f.type) && f.k !== "ownerId");
+  const inList = all.filter(f=>f.table);
+  const others = all.filter(f=>!f.table);
+  return [...inList, ...others];
 }
 
 function openImport(col){
@@ -7026,6 +7048,8 @@ function openImport(col){
   /* ---------- step 2: match columns to fields ---------- */
   function stepMap(){
     const fields = importableFields(col);
+    const inList = fields.filter(f=>f.table);
+    const others = fields.filter(f=>!f.table);
     const matched = imp.map.filter(Boolean).length;
     $("#imp-body").innerHTML = `
       <div id="imp-err" class="err hidden"></div>
@@ -7033,7 +7057,8 @@ function openImport(col){
         ${imp.rows.length} row${imp.rows.length===1?"":"s"} found.
         ${matched?`I matched <strong>${matched}</strong> column${matched===1?"":"s"} for you — check them below.`
                  :"Choose which field each column belongs to."}
-        Anything left as <em>Skip</em> is ignored.</p>
+        Anything left as <em>Skip</em> is ignored. Fields under <strong>"Shown in your ${esc(S.plural)} list"</strong>
+        are the columns you'll actually see afterward — everything else still saves to the record, just off-list.</p>
       <table class="maptbl">
         <thead><tr><th>Column in your file</th><th>First value</th><th>Import as</th></tr></thead>
         <tbody>${imp.headers.map((h,i)=>`<tr>
@@ -7041,7 +7066,12 @@ function openImport(col){
           <td class="sample">${esc(String(imp.rows[0]?.[i] ?? "").slice(0,44)) || "—"}</td>
           <td><select data-map="${i}">
             <option value="">— Skip this column —</option>
-            ${fields.map(f=>`<option value="${f.k}"${imp.map[i]===f.k?" selected":""}>${esc(f.l)}${f.req?" *":""}</option>`).join("")}
+            ${inList.length ? `<optgroup label="Shown in your ${esc(S.plural)} list">
+              ${inList.map(f=>`<option value="${f.k}"${imp.map[i]===f.k?" selected":""}>${esc(f.l)}${f.req?" *":""}</option>`).join("")}
+            </optgroup>` : ""}
+            ${others.length ? `<optgroup label="Other fields (not shown in the list)">
+              ${others.map(f=>`<option value="${f.k}"${imp.map[i]===f.k?" selected":""}>${esc(f.l)}${f.req?" *":""}</option>`).join("")}
+            </optgroup>` : ""}
           </select></td>
         </tr>`).join("")}</tbody>
       </table>
