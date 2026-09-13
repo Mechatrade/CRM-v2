@@ -2124,7 +2124,13 @@ const TITLES = { dashboard:"Dashboard", leads:"Leads", pipeline:"Opportunities",
 function render(){
   if(!state.profile) return;
   $("#view-title").textContent = TITLES[state.route] || "Mechatrade";
-  $("#new-btn").classList.toggle("hidden", ["reports","settings","forecast"].includes(state.route));
+  // Admin is a monitoring/approval role, not a data-entry one — creating
+  // business records stays with the reps who own them, so the New button
+  // disappears for admins everywhere except Team (adding people is an
+  // admin task, not "business data").
+  $("#new-btn").classList.toggle("hidden",
+    ["reports","settings","forecast","dashboard"].includes(state.route)
+    || (isAdmin() && state.route !== "team"));
   $("#new-btn").textContent = state.route==="team" ? "Add person" : "New " + (SCHEMAS[NEW_FOR[state.route]]?.label.toLowerCase() || "record");
   const v = $("#view");
   switch(state.route){
@@ -3477,7 +3483,16 @@ function viewFiltered(routeKey){
 /* 11h. BUSINESS DEVELOPMENT DASHBOARD                                 */
 /* ------------------------------------------------------------------ */
 function viewBDDashboard(){
-  const accts = rows("accounts"), deals = rows("deals"), acts = rows("activities");
+  // Personal, not shared — same as "Your Sales & Quotation Management"
+  // above it, so the whole Dashboard is consistently "my own numbers,"
+  // never the whole department's. Accounts are a shared registry everyone
+  // can read, so it's the only one that needs an explicit ownerId filter;
+  // deals/activities are already scoped to this department by rows(), and
+  // we narrow that further to just this person.
+  const uid = myUid();
+  const accts = rows("accounts").filter(a=>a.ownerId===uid);
+  const deals = rows("deals").filter(d=>d.ownerId===uid);
+  const acts = rows("activities").filter(a=>a.ownerId===uid);
   const ms = monthStart();
   const active = accts.filter(a=>a.type==="Active");
   const newActive = active.filter(a=>toDate(a.createdAt) >= ms);
