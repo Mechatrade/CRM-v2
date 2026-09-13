@@ -1080,6 +1080,7 @@ const SCHEMAS = {
     label:"Account", plural:"Accounts", icon:"▣", titleField:"name",
     fields:[
       { k:"name",     l:"Company name", type:"text",   req:true, table:true },
+      { k:"contactName", l:"Contact person", type:"text" },
       { k:"industry", l:"Industry",     type:"select", optsFrom:"industries", table:true },
       { k:"type",     l:"Account Status", type:"select",
         opts:["Active","Developing","Prospect","On Hold","Inactive","Dormant","Reactivation","Closed"],
@@ -1093,7 +1094,7 @@ const SCHEMAS = {
       { k:"ownerId",  l:"Owner",        type:"ref",    refTo:"users", table:true, assignOnly:true },
       { k:"accountManagerId", l:"Account manager", type:"ref", refTo:"users", table:true },
       { k:"documents",l:"Documents",    type:"links",  full:true },
-      { k:"notes",    l:"Shared notes", type:"textarea", full:true },
+      { k:"notes",    l:"Shared notes", type:"textarea", full:true, table:true },
       { k:"deptNotes",l:"Your department's notes", type:"deptnotes", full:true }
     ]
   },
@@ -2245,6 +2246,19 @@ function statusSelect(col, d, opts){
   return `<select class="inline-sel ${tone}" data-setstatus="${col}:${d.id}"
     title="Change status">${opts.map(o=>opt(o, now)).join("")}</select>`;
 }
+/* A plain "any select field" version of the above, for columns like
+   Account Status or Priority that need to be changeable right from the
+   list but don't carry status's special business rules (no Lost-reason
+   prompt, no approval logging) — just save the field and move on. */
+function inlineFieldSelect(col, d, f){
+  const now = d[f.k] || "";
+  if (!canEditRecord(d)) return cell(col, f, d);
+  const legacyOpts = now && !f.opts.includes(now) ? [now] : [];
+  const optLabel = o => f.statusGuide?.[o] ? `${f.statusGuide[o].emoji} ${o}` : o;
+  return `<select class="inline-sel ${pillClass(now)}" data-setfield="${col}:${d.id}:${f.k}" title="Change ${esc(f.l.toLowerCase())}">
+    ${[...f.opts,...legacyOpts].map(o=>`<option value="${esc(o)}"${o===now?" selected":""}>${esc(optLabel(o))}</option>`).join("")}
+  </select>`;
+}
 
 /* A name with the role and department underneath, so it's clear who a
    person is without opening the Team screen. */
@@ -2287,9 +2301,8 @@ function statusGuideHTML(entry){
   return `<strong>${entry.emoji} What this means:</strong> ${esc(entry.condition)}`
     + (entry.example ? `<br><strong>Example:</strong> ${esc(entry.example)}` : "");
 }
-function pillFor(key,v){
-  if(!v) return "—";
-  const cls = ({
+function pillClass(v){
+  return ({
     "Hot":"alert","Warm":"warn","Cold":"",
     "New":"info","Contacted":"info","Qualified":"accent","Converted":"accent","Unqualified":"","Engaged":"warn","Unresponsive":"",
     "Won":"accent","Lost":"alert","Proposal Sent":"warn","Negotiation":"warn",
@@ -2303,7 +2316,10 @@ function pillFor(key,v){
     "Client":"accent","Prospect":"info","Partner":"warn",
     "Developing":"info","On Hold":"warn","Inactive":"","Dormant":"alert","Reactivation":"warn","Closed":""
   })[v] ?? "";
-  return `<span class="pill ${cls}">${esc(v)}</span>`;
+}
+function pillFor(key,v){
+  if(!v) return "—";
+  return `<span class="pill ${pillClass(v)}">${esc(v)}</span>`;
 }
 function matches(d,col){
   if(!state.search) return true;
@@ -2648,6 +2664,7 @@ function viewList(col){
         ${cols.map((c,i)=>`<td class="${["money","number"].includes(c.type)?"num":""}">${
           i===0 ? `<span class="lnk" data-open="${col}:${d.id}">${esc(titleOf(col,d))}</span>`
           : (["status","stage"].includes(c.k) && c.opts && canWrite(d)) ? statusSelect(col, d, c.opts)
+          : (col==="accounts" && ["type","priority"].includes(c.k) && c.opts && canWrite(d)) ? inlineFieldSelect(col, d, c)
           : cell(col,c,d)
         }</td>`).join("")}
         <td class="row-act">
@@ -4311,6 +4328,22 @@ function wireView(){
     try{ await sendPasswordResetEmail(auth, em); toast("Reset link sent to "+em); }
     catch(e){ toast(e.message,true); }
   });
+  v.querySelectorAll("[data-setfield]").forEach(el=>{
+    el.onclick = e=> e.stopPropagation();
+    el.onchange = async ()=>{
+      const [col,id,key] = el.dataset.setfield.split(":");
+      const prev = el.dataset.was || "";
+      try{
+        await updateDoc(doc(db,col,id), { [key]: el.value, updatedAt: serverTimestamp() });
+        toast(`Updated`);
+        el.dataset.was = el.value;
+      }catch(e){
+        if (prev) el.value = prev;
+        toast(e.code === "permission-denied" ? "You can't change this one" : e.message, true);
+      }
+    };
+    el.dataset.was = el.value;
+  });
   v.querySelectorAll("[data-setstatus]").forEach(el=>{
     el.onclick = e=> e.stopPropagation();
     el.onchange = async ()=>{
@@ -4617,8 +4650,15 @@ function fieldHTML(col,f,d,isNew){
     const legacyOpts = v && !opts.includes(v) ? [v] : [];
     if (f.statusGuide){
       const optLabel = o => f.statusGuide[o] ? `${f.statusGuide[o].emoji} ${o}` : o;
-      input = `<select id="${id}" data-k="${f.k}" data-guide="${f.k}"><option value="">—</option>${[...opts,...legacyOpts].map(o=>`<option value="${esc(o)}"${o===v?" selected":""}>${esc(optLabel(o))}</option>`).join("")}</select>
-        <div class="hint guide-note" id="${id}-note" style="display:${v && f.statusGuide[v]?"block":"none"}">${v && f.statusGuide[v] ? statusGuideHTML(f.statusGuide[v]) : ""}</div>`;
+      const selectHTML = `<select id="${id}" data-k="${f.k}" data-guide="${f.k}"><option value="">—</option>${[...opts,...legacyOpts].map(o=>`<option value="${esc(o)}"${o===v?" selected":""}>${esc(optLabel(o))}</option>`).join("")}</select>`;
+      // The note goes in its own full-width row rather than nested inside
+      // this field's own grid column — otherwise its extra height only
+      // stretches this cell, leaving the field paired next to it with an
+      // ugly stretch of blank space for no reason.
+      const noteHTML = `<div class="field full guide-note-wrap" id="${id}-note-wrap" style="display:${v && f.statusGuide[v]?"block":"none"};margin-top:-8px">
+        <div class="hint guide-note" id="${id}-note">${v && f.statusGuide[v] ? statusGuideHTML(f.statusGuide[v]) : ""}</div>
+      </div>`;
+      return `<div class="field">${lab}${selectHTML}</div>${noteHTML}`;
     } else {
       input = `<select id="${id}" data-k="${f.k}"><option value="">—</option>${[...opts,...legacyOpts].map(o=>opt(o,v)).join("")}</select>`;
     }
@@ -4718,14 +4758,16 @@ function openForm(col, id, preset){
 
   // Status dropdowns with a guide (e.g. Account Status): show the
   // condition + example note the moment a value is picked, and hide it
-  // again if cleared back to "—".
+  // again if cleared back to "—". The wrapper (not the note itself) is
+  // what's shown/hidden, since it's the full-width row.
   document.querySelectorAll("[data-guide]").forEach(sel=>{
     const f = S.fields.find(x=>x.k===sel.dataset.guide);
+    const wrap = document.querySelector(`#f-${sel.dataset.guide}-note-wrap`);
     const note = document.querySelector(`#f-${sel.dataset.guide}-note`);
-    if (!f || !note) return;
+    if (!f || !wrap || !note) return;
     sel.addEventListener("change", ()=>{
       const entry = f.statusGuide[sel.value];
-      note.style.display = entry ? "block" : "none";
+      wrap.style.display = entry ? "block" : "none";
       note.innerHTML = entry ? statusGuideHTML(entry) : "";
     });
   });
@@ -4775,6 +4817,32 @@ async function nextControlNo(dept){
   return `${key}-${String(n).padStart(5,"0")}`;
 }
 
+/* Seeds a lightweight Contact record from a Company/Account's "Contact
+   person" field, so the Contacts menu isn't left disconnected from names
+   already typed elsewhere. Deliberately conservative: if a contact with
+   that name already exists for that company, it's left completely alone
+   — the real, hand-verified details a person enters directly in Contacts
+   always win over this auto-seed. Only ever creates, never updates. */
+async function autoSeedContact({ contactName, jobTitle, email, phone, accountId, companyFallback, ownerId, department }){
+  const full = String(contactName||"").trim();
+  if (!full) return;
+  const parts = full.split(/\s+/);
+  const firstName = parts[0] || "";
+  const lastName = parts.slice(1).join(" ");
+  const norm = s => String(s||"").trim().toLowerCase();
+  const existing = rows("contacts").find(c=>
+    norm(`${c.firstName} ${c.lastName}`) === norm(full)
+    && (accountId ? c.accountId === accountId : !c.accountId));
+  if (existing) return;
+  try{
+    await addDoc(collection(db,"contacts"), {
+      firstName, lastName, accountId: accountId || null,
+      jobTitle: jobTitle || null, email: email || null, phone: phone || null,
+      ownerId, department, createdBy: myUid(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      notes: (!accountId && companyFallback) ? `Company (from Lead): ${companyFallback} — add the rest of this contact's details here.` : null
+    });
+  }catch(e){ console.warn("auto-seed contact", e); }
+}
 async function submitForm(col,id){
   const S = SCHEMAS[col], vals = {}, errs = [];
   document.querySelectorAll("#modal-root [data-k]").forEach(el=>{
@@ -4815,8 +4883,26 @@ async function submitForm(col,id){
   }
   $("#save").disabled = true;
   try{
+    let savedId = id;
     if (id) await tracked(updateDoc(doc(db,col,id), payload));
-    else    await tracked(addDoc(collection(db,col), payload));
+    else { const ref = await tracked(addDoc(collection(db,col), payload)); savedId = ref.id; }
+    // Best-effort — a hiccup here shouldn't block the save that already
+    // succeeded, so failures are swallowed inside autoSeedContact itself.
+    if (col === "accounts" && payload.contactName){
+      await autoSeedContact({
+        contactName: payload.contactName, phone: payload.phone||null,
+        accountId: savedId, ownerId: payload.ownerId, department: payload.department
+      });
+    } else if (col === "leads" && payload.contactName){
+      const acct = rows("accounts").find(a=>
+        String(a.name||"").trim().toLowerCase() === String(payload.company||"").trim().toLowerCase());
+      await autoSeedContact({
+        contactName: payload.contactName, jobTitle: payload.jobTitle||null,
+        email: payload.email||null, phone: payload.phone||null,
+        accountId: acct ? acct.id : null, companyFallback: payload.company,
+        ownerId: payload.ownerId, department: payload.department
+      });
+    }
     closeModal(true); toast(S.label + (id?" saved":" created"));
   }catch(e){
     $("#save").disabled = false;
@@ -5043,8 +5129,16 @@ function openConvert(leadId){
         accountId = a.id;
       }
       if ($("#c-first").value.trim() || $("#c-last").value.trim()){
-        await addDoc(collection(db,"contacts"), {
-          ...base, firstName:$("#c-first").value.trim(), lastName:$("#c-last").value.trim(),
+        const fn = $("#c-first").value.trim(), ln = $("#c-last").value.trim();
+        // If this lead already auto-seeded an orphaned contact (no account
+        // yet) with this same name, adopt it onto the new account instead
+        // of creating a second record for the same person.
+        const norm = s => String(s||"").trim().toLowerCase();
+        const orphan = rows("contacts").find(c=> !c.accountId
+          && norm(`${c.firstName} ${c.lastName}`) === norm(`${fn} ${ln}`));
+        if (orphan) await updateDoc(doc(db,"contacts",orphan.id), { accountId, updatedAt: serverTimestamp() });
+        else await addDoc(collection(db,"contacts"), {
+          ...base, firstName:fn, lastName:ln,
           accountId, jobTitle:l.jobTitle||null, email:l.email||null, phone:l.phone||null
         });
       }
