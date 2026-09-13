@@ -4,7 +4,7 @@
    is handled separately by Firestore's own offline cache.
    Bump CACHE_VERSION whenever you upload a new index.html.
    ============================================================ */
-const CACHE_VERSION = "mechatrade-v37";
+const CACHE_VERSION = "mechatrade-v38";
 const SHELL = [
   "./",
   "./index.html",
