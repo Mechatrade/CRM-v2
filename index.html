@@ -5593,15 +5593,14 @@ function iqQuoteRow(it, ii, s, supIdx, lowest){
   const priceVal = (raw === "" || raw === null || raw === undefined) ? "" : raw;
   const isWinner = it.winnerIdx === supIdx;
   const isLowest = checked && lowest!=null && isQuoted(raw) && Number(raw)===lowest;
-  return `<div class="iq-qrow" data-item="${it._id}" data-supidx="${supIdx}" style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid var(--line-2);flex-wrap:wrap">
-    <label style="display:flex;align-items:flex-start;gap:7px;flex:1 1 auto;min-width:120px;font-size:12.5px;line-height:1.4;cursor:pointer">
-      <input type="checkbox" data-quote-chk${checked?" checked":""} style="flex:none;margin-top:2px">
-      <span style="text-align:left">${String(ii+1).padStart(2,"0")} — ${esc(it.desc||"Item "+(ii+1))}</span>
-    </label>
+  return `<div class="iq-qrow" data-item="${it._id}" data-supidx="${supIdx}"
+      style="display:grid;grid-template-columns:18px 1fr 74px 54px auto;column-gap:8px;align-items:start;padding:6px 0;border-bottom:1px solid var(--line-2)">
+    <input type="checkbox" data-quote-chk${checked?" checked":""} style="margin-top:3px">
+    <label style="font-size:12.5px;line-height:1.4;text-align:left;cursor:pointer;overflow-wrap:anywhere;padding-top:2px">${String(ii+1).padStart(2,"0")} — ${esc(it.desc||"Item "+(ii+1))}</label>
     <input type="number" data-quote-price min="0" step="any" placeholder="Price" value="${esc(priceVal)}"
-      style="width:88px;flex:none${checked?"":";visibility:hidden"}">
-    <span data-lowest-badge class="pill accent" style="font-size:9.5px;padding:2px 7px;flex:none;visibility:${isLowest?"visible":"hidden"}">Lowest</span>
-    <label style="display:flex;align-items:center;gap:4px;font-size:10.5px;color:var(--muted);flex:none;cursor:pointer${checked?"":";visibility:hidden"}" title="Mark as the winning quote for this item">
+      style="width:100%;${checked?"":"visibility:hidden"}">
+    <span data-lowest-badge class="pill accent" style="font-size:9.5px;padding:2px 6px;text-align:center;visibility:${isLowest?"visible":"hidden"}">Lowest</span>
+    <label style="display:flex;align-items:center;gap:4px;font-size:10.5px;color:var(--muted);white-space:nowrap;cursor:pointer;${checked?"":"visibility:hidden"}" title="Mark as the winning quote for this item">
       <input type="checkbox" data-item-winner${isWinner?" checked":""}> Winner
     </label>
   </div>`;
