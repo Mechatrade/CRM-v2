@@ -3849,8 +3849,18 @@ function viewPipeline(){
 /* ------------------------------------------------------------------ */
 /* 13. REPORTS                                                         */
 /* ------------------------------------------------------------------ */
-function salesReportTab(){
-  const deals = rows("deals"), leads = rows("leads");
+/* ====================================================================
+   REPORTS
+   Every report here is a printable, letterhead-formatted document (see
+   reportDocHTML/openReportPreview/printReportDoc above), not another
+   dashboard — the Dashboard is for "how am I doing right now," Reports is
+   for "give me something I can hand someone or print." Each *Report
+   function below only computes the data for a chosen date range; the
+   actual page layout lives in the print helpers.
+   ==================================================================== */
+function buildSalesReport(from, to){
+  const leads = rows("leads").filter(l=>inRange(l.createdAt, from, to));
+  const deals = rows("deals").filter(d=>inRange(d.createdAt, from, to));
   const won = deals.filter(d=>d.stage==="Won"), lost = deals.filter(d=>d.stage==="Lost");
   const closed = won.length + lost.length;
   const winRate = closed ? Math.round(won.length/closed*100) : 0;
@@ -3862,7 +3872,6 @@ function salesReportTab(){
   }).filter(n=>n!==null);
   const avgCycle = cycle.length ? Math.round(cycle.reduce((a,b)=>a+b,0)/cycle.length) : null;
 
-  // funnel
   const funnel = [
     { l:"Leads",        n:leads.length },
     { l:"Contacted",    n:leads.filter(l=>l.status!=="New").length },
@@ -3871,16 +3880,12 @@ function salesReportTab(){
     { l:"Proposals",    n:deals.filter(d=>["Proposal Sent","Negotiation","Won"].includes(d.stage)).length },
     { l:"Won",          n:won.length }
   ];
-  const fmax = Math.max(...funnel.map(f=>f.n),1);
 
-  // pipeline by stage
   const byStage = STAGES.filter(s=>s.open).map(s=>({
     l:s.key, v:deals.filter(d=>d.stage===s.key).reduce((a,d)=>a+Number(d.value||0),0),
     n:deals.filter(d=>d.stage===s.key).length
   }));
-  const smax = Math.max(...byStage.map(s=>s.v),1);
 
-  // by owner
   const owners = new Map();
   deals.forEach(d=>{
     const o = owners.get(d.ownerId) || { won:0, open:0, n:0 };
@@ -3889,16 +3894,13 @@ function salesReportTab(){
     owners.set(d.ownerId,o);
   });
   const ownerList = Array.from(owners.entries()).map(([uid,v])=>({uid,...v})).sort((a,b)=>b.won-a.won);
-  const omax = Math.max(...ownerList.map(o=>o.won),1);
 
-  // source performance
   const srcs = new Map();
   leads.forEach(l=>{ const s=srcs.get(l.source||"Unspecified")||{leads:0,won:0,val:0}; s.leads++; srcs.set(l.source||"Unspecified",s); });
   deals.forEach(d=>{ const k=d.source||"Unspecified"; const s=srcs.get(k)||{leads:0,won:0,val:0};
     if(d.stage==="Won"){ s.won++; s.val+=Number(d.value||0); } srcs.set(k,s); });
   const srcList = Array.from(srcs.entries()).map(([k,v])=>({k,...v})).sort((a,b)=>b.val-a.val);
 
-  // campaigns
   const camps = rows("campaigns").map(c=>{
     const cl = leads.filter(l=>l.campaignId===c.id);
     const cd = deals.filter(d=>d.campaignId===c.id);
@@ -3906,125 +3908,38 @@ function salesReportTab(){
     const rev = cw.reduce((s,d)=>s+Number(d.value||0),0);
     const budget = Number(c.budget||0);
     return { c, leads:cl.length, deals:cd.length, won:cw.length, rev, budget,
-             cpl: budget && cl.length ? budget/cl.length : null,
              roi: budget ? Math.round((rev-budget)/budget*100) : null };
-  }).sort((a,b)=>b.rev-a.rev);
+  }).filter(x=>x.leads||x.deals).sort((a,b)=>b.rev-a.rev);
 
-  // lost reasons
   const lr = new Map();
   lost.forEach(d=>{ const k=d.lostReason||"Not recorded"; lr.set(k,(lr.get(k)||0)+1); });
   const lrList = Array.from(lr.entries()).sort((a,b)=>b[1]-a[1]);
 
-  const acts = rows("activities");
-  const actByOwner = new Map();
-  acts.forEach(a=>{ const o=actByOwner.get(a.ownerId)||{done:0,open:0}; a.status==="Completed"?o.done++:o.open++; actByOwner.set(a.ownerId,o); });
-
-  return `
-  <div class="kpis">
-    <div class="kpi accent"><div class="lbl">Won revenue</div><div class="val mono">${shortMoney(wonVal)}</div><div class="foot">${won.length} closed won</div></div>
-    <div class="kpi"><div class="lbl">Win rate</div><div class="val">${winRate}<span style="font-size:16px">%</span></div><div class="foot">${won.length} won / ${lost.length} lost</div></div>
-    <div class="kpi"><div class="lbl">Average deal</div><div class="val mono">${shortMoney(avgDeal)}</div><div class="foot">across won deals</div></div>
-    <div class="kpi"><div class="lbl">Sales cycle</div><div class="val">${avgCycle??"—"}<span style="font-size:16px">${avgCycle?" days":""}</span></div><div class="foot">create → won</div></div>
-  </div>
-
-  <div class="grid" style="grid-template-columns:1fr 1fr">
-    <div class="card">
-      <div class="card-h"><h3>Conversion funnel</h3></div>
-      <div class="funnel">
-        ${funnel.map((f,i)=>{
-          const prev = i? funnel[i-1].n : null;
-          const drop = prev && prev>0 ? Math.round(f.n/prev*100) : null;
-          return `<div class="fstep">
-            <div style="font-size:12.5px">${esc(f.l)}${drop!==null?` <span class="mono" style="color:var(--faint);font-size:11px">${drop}%</span>`:""}</div>
-            <div class="fbar" style="width:${Math.max(f.n/fmax*100,6)}%">${f.n}</div>
-          </div>`;
-        }).join("")}
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-h"><h3>Open pipeline by stage</h3></div>
-      <div class="bars">
-        ${byStage.map(s=>`<div class="bar-row">
-          <div class="nm">${esc(s.l)} <span class="mono" style="color:var(--faint);font-size:11px">${s.n}</span></div>
-          <div class="bar-track"><div class="bar-fill" style="width:${s.v/smax*100}%"></div></div>
-          <div class="fig">${shortMoney(s.v)}</div>
-        </div>`).join("")}
-      </div>
-    </div>
-  </div>
-
-  <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:14px">
-    <div class="card">
-      <div class="card-h"><h3>By owner</h3><div class="spacer"></div><span class="eyebrow">won / open</span></div>
-      ${ownerList.length?`<div class="bars">
-        ${ownerList.map(o=>{
-          const t = Number(state.users.get(o.uid)?.monthlyTarget||0);
-          return `<div class="bar-row">
-            <div class="nm">${esc(userName(o.uid))}</div>
-            <div>
-              <div class="bar-track" style="margin-bottom:3px"><div class="bar-fill" style="width:${o.won/omax*100}%"></div></div>
-              <div class="bar-track"><div class="bar-fill ink" style="width:${o.open/omax*100}%"></div></div>
-            </div>
-            <div class="fig">${shortMoney(o.won)}${t?`<div style="font-size:10.5px;color:var(--faint)">${Math.round(o.won/t*100)}%</div>`:""}</div>
-          </div>`;
-        }).join("")}
-      </div>`:`<div class="empty">No deals recorded yet.</div>`}
-    </div>
-
-    <div class="card">
-      <div class="card-h"><h3>Why deals were lost</h3></div>
-      ${lrList.length?`<div class="bars">
-        ${lrList.map(([k,n])=>`<div class="bar-row">
-          <div class="nm">${esc(k)}</div>
-          <div class="bar-track"><div class="bar-fill alert" style="width:${n/lrList[0][1]*100}%"></div></div>
-          <div class="fig">${n}</div>
-        </div>`).join("")}
-      </div>`:`<div class="empty">No closed-lost deals. Long may it last.</div>`}
-    </div>
-  </div>
-
-  <div class="card" style="margin-top:14px">
-    <div class="card-h"><h3>Lead sources</h3><div class="spacer"></div><span class="eyebrow">where revenue actually comes from</span></div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>Source</th><th style="text-align:right">Leads</th><th style="text-align:right">Deals won</th><th style="text-align:right">Revenue</th></tr></thead>
-      <tbody>${srcList.length?srcList.map(s=>`<tr>
-        <td>${esc(s.k)}</td><td class="num">${s.leads}</td><td class="num">${s.won}</td><td class="num">${money(s.val)}</td>
-      </tr>`).join(""):`<tr><td colspan="4" class="empty">Tag leads with a source to fill this in.</td></tr>`}</tbody>
-    </table></div>
-  </div>
-
-  <div class="card" style="margin-top:14px">
-    <div class="card-h"><h3>Campaign performance</h3><div class="spacer"></div><span class="eyebrow">cost per lead · return</span></div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>Campaign</th><th>Channel</th><th style="text-align:right">Leads</th><th style="text-align:right">Deals</th>
-        <th style="text-align:right">Won</th><th style="text-align:right">Revenue</th><th style="text-align:right">Cost/lead</th><th style="text-align:right">ROI</th></tr></thead>
-      <tbody>${camps.length?camps.map(x=>`<tr>
-        <td><span class="lnk" data-open="campaigns:${x.c.id}">${esc(x.c.name)}</span></td>
-        <td>${esc(x.c.channel||"—")}</td>
-        <td class="num">${x.leads}${x.c.targetLeads?`<span style="color:var(--faint)">/${x.c.targetLeads}</span>`:""}</td>
-        <td class="num">${x.deals}</td><td class="num">${x.won}</td><td class="num">${money(x.rev)}</td>
-        <td class="num">${x.cpl!==null?money(x.cpl):"—"}</td>
-        <td class="num">${x.roi!==null?`<span class="pill ${x.roi>=0?"accent":"alert"}">${x.roi}%</span>`:"—"}</td>
-      </tr>`).join(""):`<tr><td colspan="8" class="empty">No campaigns yet.</td></tr>`}</tbody>
-    </table></div>
-  </div>
-
-  ${isManager()?`<div class="card" style="margin-top:14px">
-    <div class="card-h"><h3>Activity volume</h3><div class="spacer"></div><span class="eyebrow">completed · outstanding</span></div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>Person</th><th style="text-align:right">Completed</th><th style="text-align:right">Open</th></tr></thead>
-      <tbody>${Array.from(actByOwner.entries()).map(([uid,v])=>`<tr>
-        <td>${esc(userName(uid))}</td><td class="num">${v.done}</td><td class="num">${v.open}</td>
-      </tr>`).join("")||`<tr><td colspan="3" class="empty">No activities logged.</td></tr>`}</tbody>
-    </table></div>
-  </div>`:""}
+  const body = `
+    ${printStatRow([
+      { label:"Won revenue", value: shortMoney(wonVal), foot:`${won.length} closed won` },
+      { label:"Win rate", value: winRate+"%", foot:`${won.length} won / ${lost.length} lost` },
+      { label:"Average deal", value: shortMoney(avgDeal) },
+      { label:"Sales cycle", value: avgCycle!=null?avgCycle+" days":"—" }
+    ])}
+    ${printTableSection("Conversion funnel", [{label:"Stage"},{label:"Count",right:true}],
+      funnel.map(f=>[esc(f.l), f.n]))}
+    ${printTableSection("Open pipeline by stage", [{label:"Stage"},{label:"Deals",right:true},{label:"Value",right:true}],
+      byStage.map(s=>[esc(s.l), s.n, money(s.v)]), "No open deals in this period.")}
+    ${printTableSection("Won revenue by owner", [{label:"Person"},{label:"Won",right:true},{label:"Open pipeline",right:true},{label:"Open deals",right:true}],
+      ownerList.map(o=>[esc(userName(o.uid)), money(o.won), money(o.open), o.n]), "No deals in this period.")}
+    ${printTableSection("Lead sources", [{label:"Source"},{label:"Leads",right:true},{label:"Deals won",right:true},{label:"Revenue",right:true}],
+      srcList.map(s=>[esc(s.k), s.leads, s.won, money(s.val)]), "No leads in this period.")}
+    ${printTableSection("Campaign performance", [{label:"Campaign"},{label:"Leads",right:true},{label:"Deals"},{label:"Won",right:true},{label:"Revenue",right:true},{label:"ROI",right:true}],
+      camps.map(x=>[esc(x.c.name), x.leads, x.deals, x.won, money(x.rev), x.roi!=null?x.roi+"%":"—"]), "No campaign activity in this period.")}
+    ${printTableSection("Why deals were lost", [{label:"Reason"},{label:"Deals",right:true}],
+      lrList.map(([k,n])=>[esc(k), n]), "No closed-lost deals in this period.")}
   `;
+  return { title:"Sales Report", body };
 }
 
-/* ---- Quotation Report ---- */
-function quotationReportTab(){
-  const qs = rows("quotations");
+function buildQuotationReport(from, to){
+  const qs = rows("quotations").filter(q=>inRange(q.issueDate, from, to));
   const byStatus = new Map();
   qs.forEach(q=>{ const k=quoteStatus(q); byStatus.set(k,(byStatus.get(k)||0)+1); });
   const total = qs.length, totalVal = qs.reduce((s,q)=>s+Number(q.total||0),0);
@@ -4034,91 +3949,53 @@ function quotationReportTab(){
   const byOwner = new Map();
   qs.forEach(q=>{ const o=byOwner.get(q.ownerId)||{n:0,val:0,approved:0};
     o.n++; o.val+=Number(q.total||0); if(quoteStatus(q)==="Approved") o.approved++; byOwner.set(q.ownerId,o); });
-  const recent = qs.slice().sort((a,b)=>(toDate(b.issueDate||b.createdAt)||0)-(toDate(a.issueDate||a.createdAt)||0)).slice(0,15);
-  return `
-  <div class="kpis">
-    <div class="kpi"><div class="lbl">Quotations</div><div class="val">${total}</div><div class="foot">${money(totalVal)} quoted</div></div>
-    <div class="kpi accent"><div class="lbl">Approved</div><div class="val">${approved.length}</div><div class="foot">${money(approvedVal)}</div></div>
-    <div class="kpi"><div class="lbl">Hit rate</div><div class="val">${hitRate}<span style="font-size:16px">%</span></div><div class="foot">approved / issued</div></div>
-  </div>
-  <div class="card" style="margin-top:14px">
-    <div class="card-h"><h3>By status</h3></div>
-    <div class="bars">${Array.from(byStatus.entries()).map(([k,n])=>`<div class="bar-row">
-      <div class="nm">${esc(k)}</div>
-      <div class="bar-track"><div class="bar-fill" style="width:${n/Math.max(total,1)*100}%"></div></div>
-      <div class="fig">${n}</div>
-    </div>`).join("")||`<div class="empty">No quotations yet.</div>`}</div>
-  </div>
-  <div class="card" style="margin-top:14px">
-    <div class="card-h"><h3>By owner</h3><div class="spacer"></div><span class="eyebrow">issued · approved · value</span></div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>Person</th><th style="text-align:right">Issued</th><th style="text-align:right">Approved</th><th style="text-align:right">Value</th></tr></thead>
-      <tbody>${Array.from(byOwner.entries()).map(([uid,o])=>`<tr>
-        <td>${esc(userName(uid))}</td><td class="num">${o.n}</td><td class="num">${o.approved}</td><td class="num">${money(o.val)}</td>
-      </tr>`).join("")||`<tr><td colspan="4" class="empty">No quotations yet.</td></tr>`}</tbody>
-    </table></div>
-  </div>
-  <div class="card" style="margin-top:14px">
-    <div class="card-h"><h3>Recent quotations</h3></div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>Quote</th><th>Customer</th><th>Status</th><th style="text-align:right">Value</th><th>Issued</th></tr></thead>
-      <tbody>${recent.map(q=>`<tr>
-        <td><span class="lnk" data-open="quotations:${q.id}">${esc(q.quoteNo)}</span></td>
-        <td>${esc(refLabel("accounts",q.accountId,q))}</td>
-        <td>${pillFor("status",quoteStatus(q))}</td>
-        <td class="num">${money(q.total)}</td>
-        <td class="mono" style="font-size:12px">${fmtDate(q.issueDate)}</td>
-      </tr>`).join("")||`<tr><td colspan="5" class="empty">No quotations yet.</td></tr>`}</tbody>
-    </table></div>
-  </div>`;
+  const list = qs.slice().sort((a,b)=>(toDate(b.issueDate||b.createdAt)||0)-(toDate(a.issueDate||a.createdAt)||0));
+
+  const body = `
+    ${printStatRow([
+      { label:"Quotations", value: total, foot: money(totalVal)+" quoted" },
+      { label:"Approved", value: approved.length, foot: money(approvedVal) },
+      { label:"Hit rate", value: hitRate+"%", foot:"approved / issued" }
+    ])}
+    ${printTableSection("By status", [{label:"Status"},{label:"Count",right:true}],
+      Array.from(byStatus.entries()).map(([k,n])=>[esc(k), n]), "No quotations in this period.")}
+    ${printTableSection("By owner", [{label:"Person"},{label:"Issued",right:true},{label:"Approved",right:true},{label:"Value",right:true}],
+      Array.from(byOwner.entries()).map(([uid,o])=>[esc(userName(uid)), o.n, o.approved, money(o.val)]), "No quotations in this period.")}
+    ${printTableSection("Quotations in this period", [{label:"Quote"},{label:"Customer"},{label:"Status"},{label:"Value",right:true},{label:"Issued"}],
+      list.map(q=>[esc(q.quoteNo||"—"), esc(refLabel("accounts",q.accountId,q)), esc(quoteStatus(q)), money(q.total), fmtDate(q.issueDate)]), "No quotations in this period.")}
+  `;
+  return { title:"Quotation Report", body };
 }
 
-/* ---- Lost Sales ---- */
-function lostSalesTab(){
-  const lost = rows("deals").filter(d=>d.stage==="Lost")
+function buildLostSalesReport(from, to){
+  const lost = rows("deals").filter(d=>d.stage==="Lost" && inRange(d.closedAt||d.updatedAt, from, to))
     .sort((a,b)=>(toDate(b.closedAt||b.updatedAt)||0)-(toDate(a.closedAt||a.updatedAt)||0));
   const lostVal = lost.reduce((s,d)=>s+Number(d.value||0),0);
   const lr = new Map();
   lost.forEach(d=>{ const k=d.lostReason||"Not recorded"; const o=lr.get(k)||{n:0,val:0};
     o.n++; o.val+=Number(d.value||0); lr.set(k,o); });
   const lrList = Array.from(lr.entries()).sort((a,b)=>b[1].val-a[1].val);
-  const lmax = Math.max(...lrList.map(([,o])=>o.val),1);
-  return `
-  <div class="kpis">
-    <div class="kpi alert"><div class="lbl">Lost deals</div><div class="val">${lost.length}</div><div class="foot">${money(lostVal)} lost</div></div>
-    <div class="kpi"><div class="lbl">Top reason</div><div class="val" style="font-size:18px">${esc(lrList[0]?.[0]||"—")}</div><div class="foot">${lrList[0]?lrList[0][1].n+" deals":""}</div></div>
-  </div>
-  <div class="card" style="margin-top:14px">
-    <div class="card-h"><h3>Lost value by reason</h3></div>
-    <div class="bars">${lrList.map(([k,o])=>`<div class="bar-row">
-      <div class="nm">${esc(k)}</div>
-      <div class="bar-track"><div class="bar-fill alert" style="width:${o.val/lmax*100}%"></div></div>
-      <div class="fig">${shortMoney(o.val)}</div>
-    </div>`).join("")||`<div class="empty">No closed-lost deals. Long may it last.</div>`}</div>
-  </div>
-  <div class="card" style="margin-top:14px">
-    <div class="card-h"><h3>Lost deals</h3></div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>Deal</th><th>Customer</th><th style="text-align:right">Value</th><th>Reason</th><th>Closed</th></tr></thead>
-      <tbody>${lost.map(d=>`<tr>
-        <td><span class="lnk" data-open="deals:${d.id}">${esc(d.title)}</span></td>
-        <td>${esc(refLabel("accounts",d.accountId,d))}</td>
-        <td class="num">${money(d.value)}</td>
-        <td>${esc(d.lostReason||"Not recorded")}</td>
-        <td class="mono" style="font-size:12px">${fmtDate(d.closedAt||d.updatedAt)}</td>
-      </tr>`).join("")||`<tr><td colspan="5" class="empty">No closed-lost deals.</td></tr>`}</tbody>
-    </table></div>
-  </div>`;
+
+  const body = `
+    ${printStatRow([
+      { label:"Lost deals", value: lost.length, foot: money(lostVal)+" lost" },
+      { label:"Top reason", value: esc(lrList[0]?.[0]||"—"), foot: lrList[0]?lrList[0][1].n+" deals":"" }
+    ])}
+    ${printTableSection("Lost value by reason", [{label:"Reason"},{label:"Deals",right:true},{label:"Value",right:true}],
+      lrList.map(([k,o])=>[esc(k), o.n, money(o.val)]), "No closed-lost deals in this period.")}
+    ${printTableSection("Lost deals", [{label:"Deal"},{label:"Customer"},{label:"Value",right:true},{label:"Reason"},{label:"Closed"}],
+      lost.map(d=>[esc(d.title), esc(refLabel("accounts",d.accountId,d)), money(d.value), esc(d.lostReason||"Not recorded"), fmtDate(d.closedAt||d.updatedAt)]), "No closed-lost deals in this period.")}
+  `;
+  return { title:"Lost Sales Report", body };
 }
 
-/* ---- Customer Report ---- */
-function customerReportTab(){
+function buildCustomerReport(from, to){
   const accts = rows("accounts");
   const rowsOut = accts.map(a=>{
-    const deals = rows("deals").filter(d=>d.accountId===a.id);
+    const deals = rows("deals").filter(d=>d.accountId===a.id && inRange(d.closedAt||d.createdAt, from, to));
     const won = deals.filter(d=>d.stage==="Won");
-    const quotes = rows("quotations").filter(q=>q.accountId===a.id);
-    const orders = rows("salesorders").filter(so=>so.accountId===a.id);
+    const quotes = rows("quotations").filter(q=>q.accountId===a.id && inRange(q.issueDate, from, to));
+    const orders = rows("salesorders").filter(so=>so.accountId===a.id && inRange(so.createdAt, from, to));
     return {
       a, wonVal: won.reduce((s,d)=>s+Number(d.value||0),0), wonN: won.length,
       quotes: quotes.length, orders: orders.length,
@@ -4127,33 +4004,24 @@ function customerReportTab(){
   }).filter(r=>r.wonVal || r.quotes || r.orders)
     .sort((a,b)=>b.wonVal-a.wonVal);
   const totalRev = rowsOut.reduce((s,r)=>s+r.wonVal,0);
-  return `
-  <div class="kpis">
-    <div class="kpi accent"><div class="lbl">Active customers</div><div class="val">${rowsOut.length}</div><div class="foot">of ${accts.length} on file</div></div>
-    <div class="kpi"><div class="lbl">Revenue won</div><div class="val mono">${shortMoney(totalRev)}</div><div class="foot">across these customers</div></div>
-  </div>
-  <div class="card" style="margin-top:14px">
-    <div class="card-h"><h3>Customers by revenue</h3></div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>Customer</th><th style="text-align:right">Won deals</th><th style="text-align:right">Revenue</th>
-        <th style="text-align:right">Quotations</th><th style="text-align:right">Sales orders</th><th>Last touched</th></tr></thead>
-      <tbody>${rowsOut.map(r=>`<tr>
-        <td><span class="lnk" data-open="accounts:${r.a.id}">${esc(r.a.name)}</span></td>
-        <td class="num">${r.wonN}</td><td class="num">${money(r.wonVal)}</td>
-        <td class="num">${r.quotes}</td><td class="num">${r.orders}</td>
-        <td class="mono" style="font-size:12px">${r.last?fmtDate(r.last):"—"}</td>
-      </tr>`).join("")||`<tr><td colspan="6" class="empty">No customer activity recorded yet.</td></tr>`}</tbody>
-    </table></div>
-  </div>`;
+
+  const body = `
+    ${printStatRow([
+      { label:"Active customers", value: rowsOut.length, foot:`of ${accts.length} on file` },
+      { label:"Revenue won", value: shortMoney(totalRev) }
+    ])}
+    ${printTableSection("Customers by revenue", [{label:"Customer"},{label:"Won deals",right:true},{label:"Revenue",right:true},{label:"Quotations",right:true},{label:"Sales orders",right:true},{label:"Last touched"}],
+      rowsOut.map(r=>[esc(r.a.name), r.wonN, money(r.wonVal), r.quotes, r.orders, r.last?fmtDate(r.last):"—"]), "No customer activity in this period.")}
+  `;
+  return { title:"Customer Report", body };
 }
 
-/* ---- Product Performance ---- */
 /* Quotations don't carry line items, so this reads product-level activity
    from each Inquiry's canvass sheet and the Products catalog it feeds —
    how often an item gets canvassed, its latest cost, and how many
    suppliers cover it. */
-function productPerformanceTab(){
-  const inquiries = rows("inquiries"), products = rows("products");
+function buildProductPerformanceReport(from, to){
+  const inquiries = rows("inquiries").filter(c=>inRange(c.inquiryDate, from, to)), products = rows("products");
   const byProduct = new Map();
   inquiries.forEach(c=>{
     (c.items||[]).forEach(it=>{
@@ -4168,40 +4036,54 @@ function productPerformanceTab(){
     });
   });
   const list = Array.from(byProduct.entries()).map(([name,o])=>({name,...o})).sort((a,b)=>b.n-a.n);
-  return `
-  <div class="kpis">
-    <div class="kpi"><div class="lbl">Products tracked</div><div class="val">${products.length}</div></div>
-    <div class="kpi"><div class="lbl">Canvass sheets</div><div class="val">${inquiries.filter(i=>(i.items||[]).length).length}</div></div>
-  </div>
-  <div class="card" style="margin-top:14px">
-    <div class="card-h"><h3>Most canvassed products</h3><div class="spacer"></div><span class="eyebrow">suppliers · lowest cost seen</span></div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>Product</th><th style="text-align:right">Times canvassed</th><th style="text-align:right">Suppliers</th>
-        <th style="text-align:right">Latest cost</th><th>As of</th></tr></thead>
-      <tbody>${list.map(p=>`<tr>
-        <td>${esc(p.name)}</td><td class="num">${p.n}</td><td class="num">${p.suppliers.size}</td>
-        <td class="num">${p.lastCost?money(p.lastCost):"—"}</td>
-        <td class="mono" style="font-size:12px">${p.lastDate?fmtDate(p.lastDate):"—"}</td>
-      </tr>`).join("")||`<tr><td colspan="5" class="empty">Log a few inquiries with canvassing to see product activity here.</td></tr>`}</tbody>
-    </table></div>
-  </div>`;
+
+  const body = `
+    ${printStatRow([
+      { label:"Products tracked", value: products.length },
+      { label:"Canvass sheets", value: inquiries.filter(i=>(i.items||[]).length).length }
+    ])}
+    ${printTableSection("Most canvassed products", [{label:"Product"},{label:"Times canvassed",right:true},{label:"Suppliers",right:true},{label:"Latest cost",right:true},{label:"As of"}],
+      list.map(p=>[esc(p.name), p.n, p.suppliers.size, p.lastCost?money(p.lastCost):"—", p.lastDate?fmtDate(p.lastDate):"—"]), "No canvassing activity in this period.")}
+  `;
+  return { title:"Product Performance Report", body };
 }
 
-const REPORT_TABS = [
-  { id:"sales",     label:"Sales Report",        fn:salesReportTab },
-  { id:"quotes",    label:"Quotation Report",     fn:quotationReportTab },
-  { id:"lost",      label:"Lost Sales",           fn:lostSalesTab },
-  { id:"customers", label:"Customer Report",      fn:customerReportTab },
-  { id:"products",  label:"Product Performance",  fn:productPerformanceTab }
+function buildReport(type, from, to){
+  const fns = { sales:buildSalesReport, quotes:buildQuotationReport, lost:buildLostSalesReport,
+                customers:buildCustomerReport, products:buildProductPerformanceReport };
+  return (fns[type]||buildSalesReport)(from, to);
+}
+
+const REPORT_TYPES = [
+  { id:"sales",     label:"Sales Report" },
+  { id:"quotes",    label:"Quotation Report" },
+  { id:"lost",      label:"Lost Sales" },
+  { id:"customers", label:"Customer Report" },
+  { id:"products",  label:"Product Performance" }
 ];
+/* Reports is a builder, not a dashboard: pick a type, pick a date range
+   (or leave it blank for all time), then Generate opens a print preview —
+   the same letterhead document you'd get from Print. Nothing renders here
+   until you ask for it, which is the whole point of separating this from
+   the Dashboard. */
 function viewReports(){
-  const f = state.filters.reports = state.filters.reports || { tab:"sales" };
-  const active = REPORT_TABS.find(t=>t.id===f.tab) || REPORT_TABS[0];
+  const f = state.filters.reports = state.filters.reports || { tab:"sales", from:"", to:"" };
+  const active = REPORT_TYPES.find(t=>t.id===f.tab) || REPORT_TYPES[0];
   return `
   <div class="toolbar">
-    ${REPORT_TABS.map(t=>`<button class="btn${t.id===active.id?" pri":""}" data-rptab="${t.id}">${esc(t.label)}</button>`).join("")}
+    ${REPORT_TYPES.map(t=>`<button class="btn${t.id===f.tab?" pri":""}" data-rptab="${t.id}">${esc(t.label)}</button>`).join("")}
   </div>
-  ${active.fn()}`;
+  <div class="card" style="padding:20px;max-width:520px">
+    <div class="eyebrow" style="margin-bottom:4px">${esc(active.label)}</div>
+    <p style="font-size:12.5px;color:var(--muted);margin:6px 0 16px">
+      Pick a date range, then generate a clean, letterhead-formatted report you can preview and print.</p>
+    <div class="fgrid">
+      <div class="field"><label for="rpt-from">From</label><input id="rpt-from" type="date" value="${esc(f.from||"")}"></div>
+      <div class="field"><label for="rpt-to">To</label><input id="rpt-to" type="date" value="${esc(f.to||"")}"></div>
+    </div>
+    <p class="note" style="margin-top:6px">Leave both blank to include all time.</p>
+    <button class="btn pri" id="rpt-generate" style="margin-top:10px">Generate report</button>
+  </div>`;
 }
 /* ------------------------------------------------------------------ */
 /* 14. TEAM (admin)                                                    */
@@ -4525,6 +4407,15 @@ function wireView(){
     state.filters.reports = state.filters.reports || {};
     state.filters.reports.tab = el.dataset.rptab; render();
   });
+  if ($("#rpt-from")) $("#rpt-from").onchange = ()=>{ state.filters.reports.from = $("#rpt-from").value; };
+  if ($("#rpt-to")) $("#rpt-to").onchange = ()=>{ state.filters.reports.to = $("#rpt-to").value; };
+  if ($("#rpt-generate")) $("#rpt-generate").onclick = ()=>{
+    const f = state.filters.reports;
+    f.from = $("#rpt-from").value || "";
+    f.to = $("#rpt-to").value || "";
+    if (f.from && f.to && f.from > f.to){ toast("\"From\" needs to be before \"To\".", true); return; }
+    openReportPreview(f.tab, f.from, f.to);
+  };
   v.querySelectorAll("[data-rfilter]").forEach(el=> el.onchange = ()=>{
     state.filters.registry[el.dataset.rfilter] = el.value; render();
   });
@@ -7136,6 +7027,107 @@ function printInquiry(id){
   if (d) printInquiryDoc(d);
 }
 
+/* A date-range check shared by every printable report: blank from/to means
+   "all time" (include everything, even records with no date on them at
+   all); once either bound is set, a record needs an actual date to match. */
+function inRange(dateVal, from, to){
+  if (!from && !to) return true;
+  const d = toDate(dateVal);
+  if (!d) return false;
+  if (from && d < new Date(from+"T00:00:00")) return false;
+  if (to && d > new Date(to+"T23:59:59")) return false;
+  return true;
+}
+function periodLabel(from, to){
+  if (!from && !to) return "All time";
+  if (from && to) return `${fmtDate(from)} – ${fmtDate(to)}`;
+  if (from) return `From ${fmtDate(from)}`;
+  return `Through ${fmtDate(to)}`;
+}
+/* A clean row of headline figures for the top of a printed report — same
+   idea as a dashboard KPI row, minus the colour/card chrome, since this is
+   meant to print in black and white as easily as on screen. */
+function printStatRow(stats){
+  return `<div style="display:flex;gap:26px;margin-top:20px;flex-wrap:wrap;border-top:1px solid #E6EAEF;border-bottom:1px solid #E6EAEF;padding:14px 0">
+    ${stats.map(s=>`<div style="flex:1;min-width:110px">
+      <div style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#8496A7">${esc(s.label)}</div>
+      <div style="font-size:19px;font-weight:700;color:#0E2438;margin-top:3px">${s.value}</div>
+      ${s.foot?`<div style="font-size:10px;color:#5A6B7C;margin-top:2px">${esc(s.foot)}</div>`:""}
+    </div>`).join("")}
+  </div>`;
+}
+/* A titled data table, reusing the same table.it styling the Quotation
+   document already uses, so a report and a quote look like they belong to
+   the same stationery. */
+function printTableSection(title, headers, bodyRows, emptyMsg){
+  return `<div style="margin-top:22px">
+    <div class="cap">${esc(title)}</div>
+    <table class="it" style="margin-top:8px">
+      <thead><tr>${headers.map(h=>`<th${h.right?' class="r"':""}>${esc(h.label)}</th>`).join("")}</tr></thead>
+      <tbody>${bodyRows.length ? bodyRows.map(r=>`<tr>${r.map((c,i)=>`<td${headers[i]?.right?' class="r"':""}>${c}</td>`).join("")}</tr>`).join("")
+        : `<tr><td colspan="${headers.length}" style="text-align:center;color:#8496A7;padding:16px">${esc(emptyMsg||"No data for this period.")}</td></tr>`}</tbody>
+    </table>
+  </div>`;
+}
+/* The letterhead wrapper every report shares — same header block as the
+   Quotation/Inquiry documents, just with the report's own title and the
+   date range in place of a quote number. */
+function reportDocHTML(title, from, to, bodyHTML){
+  const st = state.settings;
+  const co = [st.companyAddress, st.companyPhone && "Tel: "+st.companyPhone,
+              st.companyEmail, st.companyWeb, st.companyTin && "TIN: "+st.companyTin]
+             .filter(Boolean).map(esc).join("<br>");
+  return `<div class="sheet">
+    <div class="lh">
+      <div>
+        <img src="${LOGO_PRINT}" alt="${esc(st.companyName||"")}">
+        <div class="co">${co || "&nbsp;"}</div>
+      </div>
+      <div class="dt">
+        <h1>${esc(title.toUpperCase())}</h1>
+        <table>
+          <tr><td>Period</td><td class="r"><strong>${esc(periodLabel(from,to))}</strong></td></tr>
+          <tr><td>Generated</td><td class="r">${fmtDate(new Date().toISOString())}</td></tr>
+          <tr><td>By</td><td class="r">${esc(state.profile?.displayName||"—")}</td></tr>
+        </table>
+      </div>
+    </div>
+    ${bodyHTML}
+    <div class="foot">${esc(st.companyName||"")} — generated from Mechatrade CRM, not a substitute for audited financials.</div>
+  </div>`;
+}
+function openReportPreview(type, from, to){
+  const { title, body } = buildReport(type, from, to);
+  const wrap = document.createElement("div");
+  wrap.className = "scrim preview-scrim";
+  wrap.innerHTML = `
+    <style>${quoteDocCSS()}</style>
+    <div class="preview-shell">
+      <div class="preview-bar">
+        <span class="eyebrow">${esc(title)} preview</span>
+        <div style="flex:1"></div>
+        <button class="btn sm" data-pp>Print</button>
+        <button class="btn sm" data-px>Close</button>
+      </div>
+      <div class="preview-page">${reportDocHTML(title, from, to, body)}</div>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close = ()=> wrap.remove();
+  wrap.querySelector("[data-px]").onclick = close;
+  wrap.onclick = e=>{ if (e.target === wrap) close(); };
+  wrap.querySelector("[data-pp]").onclick = ()=> printReportDoc(type, from, to);
+}
+function printReportDoc(type, from, to){
+  const { title, body } = buildReport(type, from, to);
+  const w = window.open("", "_blank", "width=900,height=1100");
+  if (!w){ toast("Allow pop-ups to print", true); return; }
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>${esc(title)}</title><style>
+    body{margin:0;background:#fff}${quoteDocCSS()}</style></head>
+    <body>${reportDocHTML(title, from, to, body)}</body></html>`);
+  w.document.close();
+  setTimeout(()=>{ w.focus(); w.print(); }, 500);
+}
 function quoteDocCSS(){
   return `
     @page{ size:A4; margin:14mm; }
