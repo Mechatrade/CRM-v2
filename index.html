@@ -534,6 +534,9 @@ table.previewtbl tr.rowbad td{background:var(--alert-weak)}
 .modal.wide{max-width:860px}
 .modal.xwide{max-width:1180px}
 .modal.xwide .modal-b{max-height:78vh}
+.modal.xxwide{max-width:1400px}
+.modal.xxwide .modal-b{max-height:80vh}
+@media (max-width:1460px){ .modal.xxwide{max-width:calc(100vw - 40px)} }
 .modal.nudge{animation:nudge .3s cubic-bezier(.36,.07,.19,.97)}
 @keyframes nudge{
   10%,90%{transform:translateX(-1.5px)} 20%,80%{transform:translateX(3px)}
@@ -1395,18 +1398,13 @@ function originCurrency(country){ return COUNTRY_CURRENCY[country] || "USD"; }
    quoted. */
 function isQuoted(raw){ return raw !== "" && raw !== null && raw !== undefined; }
 const NO_QUOTE_TAG = `<span style="color:var(--faint);font-style:italic;font-size:11.5px">No quote</span>`;
-/* Winner selection across a canvass sheet.
-   iqComboCost evaluates ANY chosen set of suppliers — for each item it
-   uses whichever chosen supplier quoted it cheapest, and adds each chosen
-   supplier's shipping once. Used both for a single supplier's own total
-   and for scoring an arbitrary multi-supplier combination.
-   iqWinnerAnalysis then finds two reference points: the General Rule
-   winner (the single supplier that quoted every item at the lowest total)
-   and the true best possible combination (Exemption Rule) — found by
-   trying every subset of named suppliers, not just "whoever's cheapest on
-   each item," because blindly including a supplier for one cheap item can
-   cost more in shipping than it saves. The person still picks the actual
-   winner(s) by hand; this only tells them what's possible. */
+/* Winner selection across a canvass sheet — fully manual now: the person
+   ticks a "Winner" per item in each supplier's "Items quoted" checklist.
+   iqComboCost totals up an arbitrary chosen set of suppliers (used for
+   each supplier's own total, below) and iqManualCombo totals up whatever
+   was actually ticked. iqItemLowest is purely informational: for each
+   item, which price(s) are the cheapest among everyone who quoted it, so
+   the checklist can flag it — it never decides the winner by itself. */
 function iqComboCost(items, suppliers, chosenIdx){
   const set = new Set(chosenIdx);
   const itemWinners = items.map(it=>{
@@ -1426,32 +1424,20 @@ function iqComboCost(items, suppliers, chosenIdx){
   const shipping = usedSuppliers.reduce((sum,i)=> sum + Number(suppliers[i]?.shippingCost||0), 0);
   return { itemWinners, usedSuppliers, allCovered, total: goods + shipping };
 }
-function iqWinnerAnalysis(items, suppliers){
-  const totals = suppliers.map((s,i)=> iqComboCost(items, suppliers, [i]).total);
-  const isComplete = i => !!suppliers[i]?.name && iqComboCost(items, suppliers, [i]).allCovered;
-  const completeIdx = suppliers.map((s,i)=>i).filter(isComplete);
-  const generalWinner = completeIdx.length
-    ? completeIdx.reduce((a,b)=> totals[b]<totals[a] ? b : a) : null;
-  const generalTotal = generalWinner!=null ? totals[generalWinner] : null;
-
-  // Exhaustive search over named suppliers for the cheapest combination
-  // that covers every item. Small n in a canvass sheet, so this is cheap
-  // (2^n - 1 subsets) and finds the true optimum rather than a guess.
-  const named = suppliers.map((s,i)=>i).filter(i=>suppliers[i]?.name);
-  let best = null;
-  if (named.length && named.length<=16){
-    const m = named.length;
-    for (let mask=1; mask<(1<<m); mask++){
-      const subset = named.filter((_,bit)=> mask & (1<<bit));
-      const combo = iqComboCost(items, suppliers, subset);
-      if (!combo.allCovered) continue;
-      if (!best || combo.total < best.total) best = { ...combo, chosen: subset };
-    }
-  }
-  const savings = (best && generalTotal!=null) ? (generalTotal - best.total) : null;
-  const savingsPct = (savings!=null && generalTotal>0) ? (savings/generalTotal*100) : null;
-  const worthwhile = best!=null && best.usedSuppliers.length>1 && (generalTotal==null || best.total < generalTotal);
-  return { totals, completeIdx, generalWinner, generalTotal, best, savings, savingsPct, worthwhile };
+// Each supplier's own total, as if they alone supplied everything they quoted.
+function iqSupplierTotals(items, suppliers){
+  return suppliers.map((s,i)=> iqComboCost(items, suppliers, [i]).total);
+}
+// Per item, the lowest quoted price and which supplier(s) share it — ties
+// all get flagged. Returns null for an item nobody quoted, or one only one
+// supplier quoted (nothing to compare).
+function iqItemLowest(items, suppliers){
+  return items.map(it=>{
+    const quoted = suppliers.map((s,i)=> isQuoted((it.costs||[])[i]) ? Number((it.costs||[])[i]) : null);
+    const priced = quoted.filter(v=>v!=null);
+    if (priced.length < 2) return null;
+    return Math.min(...priced);
+  });
 }
 /* The actual, manually-ticked winner — each item carries its own
    winnerIdx (which supplier's tick was checked for that item, or null).
@@ -5205,31 +5191,35 @@ function iqItemRow(l, idx, supCount){
    items on this inquiry, with a checkbox for "did this supplier quote it"
    and — only once checked — a price field. Unticked items stay null (no
    quote) and never show a price field, so a supplier that only covers 2 of
-   5 items doesn't leave 3 confusing blanks. Next to the price is a
-   "Winner" tick — the actual, manual choice of whose quote to use for that
-   item. Only one supplier can win a given item, so ticking one clears any
-   other supplier's tick for the same item (matched by item id, across
-   whichever card it's in). The Item list inquiry table reads from this
-   data too (see iqItemRow / recalc) rather than taking input itself, so
-   the two views never disagree. */
-function iqQuoteRow(it, ii, s, supIdx){
+   5 items doesn't leave 3 confusing blanks. A "Lowest" badge appears next
+   to whichever price(s) are cheapest for that item across every supplier
+   who quoted it — informational only, including ties. Separately, a
+   "Winner" tick is the actual, manual choice of whose quote to use for
+   that item; only one supplier can win a given item, so ticking one clears
+   any other supplier's tick for the same item (matched by item id, across
+   whichever card it's in). The Item list inquiry table reads from the
+   Winner ticks too (see iqItemRow / recalc) rather than taking input
+   itself, so the two views never disagree. */
+function iqQuoteRow(it, ii, s, supIdx, lowest){
   const raw = (it.costs||[])[supIdx];
   const checked = raw !== null && raw !== undefined;
   const priceVal = (raw === "" || raw === null || raw === undefined) ? "" : raw;
   const isWinner = it.winnerIdx === supIdx;
-  return `<div class="iq-qrow" data-item="${it._id}" style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line-2)">
-    <label style="display:flex;align-items:center;gap:7px;flex:1;font-size:12.5px;cursor:pointer">
+  const isLowest = checked && lowest!=null && isQuoted(raw) && Number(raw)===lowest;
+  return `<div class="iq-qrow" data-item="${it._id}" data-supidx="${supIdx}" style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line-2);flex-wrap:wrap">
+    <label style="display:flex;align-items:center;gap:7px;flex:1 1 auto;min-width:120px;font-size:12.5px;cursor:pointer">
       <input type="checkbox" data-quote-chk${checked?" checked":""}>
       <span>${String(ii+1).padStart(2,"0")} — ${esc(it.desc||"Item "+(ii+1))}</span>
     </label>
     <input type="number" data-quote-price min="0" step="any" placeholder="Price" value="${esc(priceVal)}"
       style="width:88px;flex:none${checked?"":";visibility:hidden"}">
+    <span data-lowest-badge class="pill accent" style="font-size:9.5px;padding:2px 7px;flex:none;visibility:${isLowest?"visible":"hidden"}">Lowest</span>
     <label style="display:flex;align-items:center;gap:4px;font-size:10.5px;color:var(--muted);flex:none;cursor:pointer${checked?"":";visibility:hidden"}" title="Mark as the winning quote for this item">
       <input type="checkbox" data-item-winner${isWinner?" checked":""}> Winner
     </label>
   </div>`;
 }
-function iqSupplierBlock(s, idx, items){
+function iqSupplierBlock(s, idx, items, itemLowest){
   const intl = (s.purchaseType||"Local") === "International";
   const curVal = s.currency || originCurrency(s.originCountry);
   return `<div class="card" data-sup="${s._id}" style="padding:12px;position:relative">
@@ -5255,7 +5245,7 @@ function iqSupplierBlock(s, idx, items){
       <label>Items quoted${intl?` (${esc(curVal)})`:""}</label>
       <div data-quote-list style="margin-top:4px">
         ${items.length
-          ? items.map((it,ii)=>iqQuoteRow(it,ii,s,idx)).join("")
+          ? items.map((it,ii)=>iqQuoteRow(it,ii,s,idx,itemLowest?itemLowest[ii]:null)).join("")
           : `<p class="note" style="margin:2px 0 0">Add items above first.</p>`}
       </div>
     </div>
@@ -5296,7 +5286,6 @@ function openInquiryForm(id, preset){
 
   modal(`
     <div class="modal-h"><h3>${id?"Edit inquiry":"New inquiry"}</h3>
-      <button class="btn sm" id="iq-expand" type="button" style="margin-left:auto">⤢ Expand</button>
       <button class="x" data-close aria-label="Close">×</button></div>
     <div class="modal-b">
       <div id="form-err" class="err hidden"></div>
@@ -5341,8 +5330,7 @@ function openInquiryForm(id, preset){
       <div class="eyebrow" style="margin:20px 0 9px">Totals &amp; winner</div>
       <div id="iq-totals" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px"></div>
       <div id="iq-selection"></div>
-      <div id="iq-split"></div>
-      <p class="note">Tick "Winner" next to an item in a supplier's "Items quoted" list to choose whose price is used for that item — only one supplier can win each item. "Best combination" below suggests the cheapest possible set of ticks, factoring in each supplier's shipping, with one click to apply it.</p>
+      <p class="note">Tick "Winner" next to an item in a supplier's "Items quoted" list to choose whose price is used for that item — a "Lowest" badge flags the cheapest offer(s) for each item as a guide, but the tick is always your call.</p>
 
       <div class="eyebrow" style="margin:20px 0 2px">Notes</div>
       <div class="field full"><textarea id="iq-notes">${esc(d.notes||"")}</textarea></div>
@@ -5354,6 +5342,7 @@ function openInquiryForm(id, preset){
       <button class="btn" data-close>Cancel</button>
       <button class="btn pri" id="iq-save">${id?"Save inquiry":"Create inquiry"}</button>
     </div>`, true);
+  document.querySelector(".modal").classList.add("xxwide");
 
   function refreshContactOptions(){
     const type = $("#iq-reltype").value, relId = $("#iq-relid").value;
@@ -5389,7 +5378,8 @@ function openInquiryForm(id, preset){
       delBtn.onclick = ()=>{ if (items.length<=1) return; items = items.filter(x=>x._id!==line._id); render(); };
     });
 
-    $("#iq-suppliers").innerHTML = suppliers.map((s,i)=>iqSupplierBlock(s,i,items)).join("");
+    const itemLowest = iqItemLowest(items, suppliers);
+    $("#iq-suppliers").innerHTML = suppliers.map((s,i)=>iqSupplierBlock(s,i,items,itemLowest)).join("");
     $("#iq-suppliers").querySelectorAll("[data-sup]").forEach(block=>{
       const sid = Number(block.dataset.sup);
       const s = suppliers.find(x=>x._id===sid);
@@ -5467,8 +5457,7 @@ function openInquiryForm(id, preset){
     $("#iq-totals").innerHTML = suppliers.map((s,i)=>`
       <div class="card" style="padding:12px" data-total="${i}">
         <div style="font-size:12px;color:var(--muted)" data-tname>${esc(s.name||`Supplier ${i+1}`)}${s.purchaseType==="International"?` (${esc(s.currency||"USD")})`:""}</div>
-        <div style="font-size:11px;margin-top:2px" data-tflag></div>
-        <div style="font-size:18px;font-weight:600;margin:4px 0;font-family:var(--mono)" data-tval>₱0</div>
+        <div style="font-size:18px;font-weight:600;margin:6px 0 0;font-family:var(--mono)" data-tval>₱0</div>
       </div>`).join("");
     if (suppliers.some(s=>s.purchaseType==="International") && suppliers.some(s=>(s.purchaseType||"Local")==="Local"))
       $("#iq-totals").insertAdjacentHTML("beforeend",
@@ -5494,12 +5483,12 @@ function openInquiryForm(id, preset){
       th.innerHTML = esc(s.name||`Supplier ${i+1}`)
         + (s.purchaseType==="International" ? ` <span style="font-weight:400;color:var(--muted)">(${esc(s.currency||"USD")})</span>` : "");
     });
-    const analysis = iqWinnerAnalysis(items, suppliers);
+    const totals = iqSupplierTotals(items, suppliers);
+    const itemLowest = iqItemLowest(items, suppliers);
     const chosen = iqManualCombo(items, suppliers);
     // Item list inquiry: highlight whichever supplier is manually ticked as
     // the Winner for each row (see the "Items quoted" checklist per
-    // supplier card) — this is the actual, hand-picked choice, not an
-    // auto-computed cheapest.
+    // supplier card) — this is the actual, hand-picked choice.
     items.forEach((it,idx)=>{
       const tr = document.querySelector(`#iq-items tr[data-id="${it._id}"]`);
       if (!tr) return;
@@ -5508,16 +5497,21 @@ function openInquiryForm(id, preset){
         const priceOut = tr.querySelector(`[data-out="price${i}"]`);
         if (priceOut){ priceOut.style.fontWeight = win ? "700" : ""; priceOut.style.color = win ? "var(--accent)" : ""; }
       });
+      // The "Lowest" badge next to each supplier's price for this item —
+      // purely informational, updates live as prices change.
+      suppliers.forEach((s,i)=>{
+        const raw = (it.costs||[])[i];
+        const low = itemLowest[idx];
+        const isLow = isQuoted(raw) && low!=null && Number(raw)===low;
+        const badge = document.querySelector(`[data-item="${it._id}"][data-supidx="${i}"] [data-lowest-badge]`);
+        if (badge) badge.style.visibility = isLow ? "visible" : "hidden";
+      });
     });
     suppliers.forEach((s,i)=>{
       const card = document.querySelector(`#iq-totals [data-total="${i}"]`);
       if (!card) return;
       card.querySelector("[data-tname]").textContent = (s.name || `Supplier ${i+1}`) + (s.purchaseType==="International" ? ` (${s.currency||"USD"})` : "");
-      const flag = card.querySelector("[data-tflag]");
-      flag.innerHTML = i===analysis.generalWinner
-        ? `<span class="pill accent" style="font-size:10px">Lowest complete</span>`
-        : (s.name && !analysis.completeIdx.includes(i) ? `<span class="pill" style="font-size:10px;opacity:.7">Incomplete quote</span>` : "");
-      card.querySelector("[data-tval]").innerHTML = money(analysis.totals[i]);
+      card.querySelector("[data-tval]").innerHTML = money(totals[i]);
     });
 
     // Your ticked winner(s), whatever they are — always shown so it's clear
@@ -5536,44 +5530,9 @@ function openInquiryForm(id, preset){
         </div>`;
       }
     }
-
-    // Exemption Rule suggestion: the cheapest possible combination, shown
-    // whenever it beats what's currently ticked (or nothing's ticked yet) —
-    // a one-click way to tick everything at once, which you can still
-    // hand-adjust afterward.
-    const box = $("#iq-split");
-    if (!box) return;
-    const showSuggestion = analysis.best && analysis.best.usedSuppliers.length &&
-      (!chosen.usedSuppliers.length || analysis.best.total < chosen.total || !chosen.allCovered) &&
-      !(chosen.usedSuppliers.length && analysis.best.itemWinners.every((w,idx)=> w===chosen.itemWinners[idx]));
-    if (showSuggestion){
-      const names = analysis.best.usedSuppliers.map(i=>suppliers[i]?.name).filter(Boolean).join(", ");
-      const label = analysis.best.usedSuppliers.length>1 ? `Best combination — split across ${analysis.best.usedSuppliers.length} suppliers` : "Best single supplier";
-      const savingsLine = analysis.savings!=null
-        ? `${money(analysis.savings)} (${analysis.savingsPct.toFixed(1)}%) less than ${esc(suppliers[analysis.generalWinner]?.name||"the complete-quote winner")}'s total of ${money(analysis.generalTotal)}.`
-        : `No single supplier quoted every item — this is the cheapest full coverage available.`;
-      box.innerHTML = `<div class="card" style="padding:12px;margin-top:12px;border-color:var(--accent)">
-        <div style="font-size:12px;font-weight:600">${label}</div>
-        <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${esc(names)}</div>
-        <div style="font-size:18px;font-weight:600;margin:6px 0;font-family:var(--mono)">${money(analysis.best.total)}</div>
-        <div style="font-size:11.5px;color:var(--muted)">${savingsLine}</div>
-        <button class="btn sm pri" id="iq-apply-split" type="button" style="margin-top:9px">Tick this combination</button>
-      </div>`;
-      $("#iq-apply-split").onclick = ()=>{
-        items.forEach((it,idx)=>{ it.winnerIdx = analysis.best.itemWinners[idx]; });
-        render();
-      };
-    } else {
-      box.innerHTML = "";
-    }
   }
 
 
-  $("#iq-expand").onclick = ()=>{
-    const card = document.querySelector(".modal");
-    const expanded = card.classList.toggle("xwide");
-    $("#iq-expand").textContent = expanded ? "⤡ Collapse" : "⤢ Expand";
-  };
   $("#iq-add").onclick = ()=>{ items.push({ _id: nextLineId++, desc:"", uom:"", qty:1, costs: suppliers.map(()=>null), winnerIdx: null }); render(); };
   $("#iq-add-sup").onclick = ()=>{
     suppliers.push({ _id: nextSupId++, name:"", tel:"", contact:"", leadTime:"", shippingCost:"" });
@@ -5691,9 +5650,8 @@ function openInquiryDetail(id){
   const d = state.data.inquiries.get(id); if(!d) return;
   const items = Array.isArray(d.items) ? d.items : [];
   const suppliers = Array.isArray(d.suppliers) ? d.suppliers : [];
-  const analysis = iqWinnerAnalysis(items, suppliers);
+  const totals = iqSupplierTotals(items, suppliers);
   const chosen = iqManualCombo(items, suppliers);
-  const totals = analysis.totals;
   const isWinnerSup = i => chosen.usedSuppliers.includes(i);
   modal(`
     <div class="modal-h">
@@ -5750,10 +5708,7 @@ function openInquiryDetail(id){
               ? `<div style="font-size:11.5px;color:var(--muted);margin-top:4px">${esc(s.originCountry||"Origin not set")} · ${esc(s.currency||"USD")}</div>`
               : `<div style="font-size:11.5px;color:var(--muted);margin-top:4px">Local supplier</div>`}
             ${s?.shippingCost ? `<div style="font-size:11.5px;color:var(--muted)">Shipping: ${s.purchaseType==="International"?fx(s.shippingCost,s.currency):money(s.shippingCost)}</div>` : ""}
-            ${!s?.name ? "" : (analysis.completeIdx.includes(i)
-                ? `<span class="pill" style="margin-top:8px;display:inline-block;font-size:10px">Complete quote</span>`
-                : `<span class="pill" style="margin-top:8px;display:inline-block;font-size:10px;opacity:.7">Incomplete quote</span>`)}
-            ${isWinnerSup(i) ? `<span class="pill accent" style="margin-top:8px;margin-left:6px;display:inline-block">${chosen.usedSuppliers.length>1?"In selection":"Winner"}</span>` : ""}
+            ${isWinnerSup(i) ? `<span class="pill accent" style="margin-top:8px;display:inline-block">${chosen.usedSuppliers.length>1?"In selection":"Winner"}</span>` : ""}
           </div>`).join("")}
       </div>
 
@@ -5769,7 +5724,7 @@ function openInquiryDetail(id){
       <p class="note" style="margin-top:8px">
         ${chosen.usedSuppliers.length
           ? `${chosen.usedSuppliers.length>1?`Split across ${chosen.usedSuppliers.length} suppliers`:`${esc(suppliers[chosen.usedSuppliers[0]]?.name||"This supplier")} ticked as winner`} — combined total ${money(chosen.total)}${!chosen.allCovered?" (doesn't cover every item)":""}.`
-          : `No winner ticked yet. ${analysis.generalWinner!=null?`${esc(suppliers[analysis.generalWinner]?.name)} quoted every item at the lowest total (${money(analysis.generalTotal)}).`:`No supplier has quoted every item yet.`}${analysis.best && analysis.best.usedSuppliers.length>1 && analysis.worthwhile?` A cheaper combination exists: ${analysis.best.usedSuppliers.map(i=>esc(suppliers[i]?.name)).join(" + ")} for ${money(analysis.best.total)}.`:""}`}
+          : `No winner ticked yet — edit this inquiry and tick a Winner per item in each supplier's "Items quoted" list.`}
       </p>` : `<div class="card" style="padding:14px;margin-top:14px"><p style="color:var(--muted);font-size:13px;margin:0">No suppliers canvassed yet. Edit this inquiry to add suppliers and pricing.</p></div>`}
 
       ${d.notes ? `<div style="margin-top:16px"><div class="eyebrow">Notes</div>
@@ -6581,9 +6536,8 @@ function inquiryDocHTML(d){
   const st = state.settings;
   const items = Array.isArray(d.items) ? d.items : [];
   const suppliers = Array.isArray(d.suppliers) ? d.suppliers : [];
-  const analysis = iqWinnerAnalysis(items, suppliers);
+  const totals = iqSupplierTotals(items, suppliers);
   const chosen = iqManualCombo(items, suppliers);
-  const totals = analysis.totals;
   const isWinnerSup = i => chosen.usedSuppliers.includes(i);
   const co = [st.companyAddress, st.companyPhone && "Tel: "+st.companyPhone,
               st.companyEmail, st.companyWeb, st.companyTin && "TIN: "+st.companyTin]
