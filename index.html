@@ -2698,7 +2698,7 @@ function viewList(col){
         }</td>`).join("")}
         <td class="row-act">
           ${canWrite(d) ? `
-            ${col==="leads" && d.status!=="Converted" ? `<button class="btn sm" data-convert="${d.id}">Convert</button> `:""}
+            ${col==="leads" && d.status==="Qualified" ? `<button class="btn sm" data-convert="${d.id}">Convert</button> `:""}
             ${col==="activities" && d.status!=="Completed" ? `<button class="btn sm" data-donebtn="${d.id}">Done</button> `:""}
             ${col==="inquiries" ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
             ${col==="costing" && d.status==="Approved" ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
@@ -5132,7 +5132,7 @@ function openDetail(col,id){
       ${col === "deals" ? dealQuotes(id) : ""}
     </div>
     <div class="modal-f">
-      ${col==="leads" && d.status!=="Converted" ? `<button class="btn" id="conv">Convert to customer</button>`:""}
+      ${col==="leads" && d.status==="Qualified" ? `<button class="btn" id="conv">Convert to customer</button>`:""}
       ${col==="activities" && d.nextAction && canWrite(d) ? `<button class="btn" id="follow-task">Create follow-up task</button>`:""}
       <div class="spacer"></div>
       ${canWrite(d) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
