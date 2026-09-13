@@ -563,6 +563,11 @@ table.previewtbl tr.rowbad td{background:var(--alert-weak)}
 }
 .field textarea{min-height:74px;resize:vertical}
 .field .hint{font-size:11px;color:var(--faint)}
+.field .guide-note{
+  margin-top:6px;padding:8px 10px;border-radius:8px;
+  background:var(--accent-weak);border:1px solid var(--accent);
+  color:var(--text);font-size:12px;line-height:1.5;
+}
 select option, select optgroup{ background:var(--opt-bg); color:var(--opt-text); }
 .field input::placeholder,.field textarea::placeholder,.search input::placeholder{color:var(--placeholder)}
 .items input{color:var(--text)}
@@ -1027,6 +1032,20 @@ const LOGO_PRINT = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAbgAAACKCAYAAA
 /*    type: text | email | tel | number | money | date | select |      */
 /*          textarea | ref | url                                       */
 /* ------------------------------------------------------------------ */
+/* Account Status — the lifecycle stage of a customer relationship, shown
+   as a live guide under the dropdown whenever it's picked (see fieldHTML's
+   statusGuide handling). Condition/example text mirrors the reference
+   table the business worked out for this. */
+const ACCOUNT_STATUS_GUIDE = {
+  "Active":       { emoji:"🟢", condition:"Customer has recent transactions, ongoing inquiries, or regular communication with the company.", example:"Customer purchased within the last 6 months and is still requesting quotations." },
+  "Developing":   { emoji:"🔵", condition:"Customer has potential, but the relationship/business volume is still being developed.", example:"New company that has made inquiries but has not purchased yet." },
+  "Prospect":     { emoji:"🟡", condition:"Customer has shown clear interest or potential to buy, but has not yet converted into a customer.", example:"Requested product pricing, canvass, or quotation." },
+  "On Hold":      { emoji:"🟠", condition:"Customer has an active opportunity but has temporarily paused the project or purchase.", example:"Project postponed until next quarter." },
+  "Inactive":     { emoji:"⚪", condition:"Customer has no recent transactions or meaningful activity, but there is still potential for future business.", example:"No purchase for 6–12 months but customer remains reachable." },
+  "Dormant":      { emoji:"🔴", condition:"Customer has had no meaningful activity for an extended period and requires re-engagement.", example:"No inquiries, quotations, communication, or purchases for 12+ months." },
+  "Reactivation": { emoji:"🟣", condition:"Previously inactive/dormant customer is currently being contacted to restore the business relationship.", example:"Salesperson is reaching out to an old customer with new products." },
+  "Closed":       { emoji:"⚫", condition:"Account is no longer expected to conduct business with the company.", example:"Company permanently closed or formally requested to stop business." }
+};
 const SCHEMAS = {
   leads: {
     label:"Lead", plural:"Leads", icon:"◔", titleField:"company",
@@ -1052,7 +1071,9 @@ const SCHEMAS = {
     fields:[
       { k:"name",     l:"Company name", type:"text",   req:true, table:true },
       { k:"industry", l:"Industry",     type:"select", optsFrom:"industries", table:true },
-      { k:"type",     l:"Type",         type:"select", opts:["Prospect","Client","Supplier","Contractor","Consultant","Manufacturer","Partner","Former client"], def:"Prospect", table:true },
+      { k:"type",     l:"Account Status", type:"select",
+        opts:["Active","Developing","Prospect","On Hold","Inactive","Dormant","Reactivation","Closed"],
+        def:"Prospect", table:true, statusGuide:ACCOUNT_STATUS_GUIDE },
       { k:"companySize", l:"Company size", type:"select", opts:["1–10","11–50","51–200","201–500","500+"] },
       { k:"priority", l:"Priority",     type:"select", opts:["High","Medium","Low"], def:"Medium", table:true },
       { k:"website",  l:"Website",      type:"url" },
@@ -2242,6 +2263,14 @@ function approvalHistoryHTML(d){
   </div>`;
 }
 
+/* The little pop-up-style note under a status dropdown — what the status
+   means and a concrete example, shown live as soon as a value is picked.
+   Kept as its own function so any future statusGuide field (not just
+   Account Status) renders the note the same way. */
+function statusGuideHTML(entry){
+  return `<strong>${entry.emoji} What this means:</strong> ${esc(entry.condition)}
+    <br><strong>Example:</strong> ${esc(entry.example)}`;
+}
 function pillFor(key,v){
   if(!v) return "—";
   const cls = ({
@@ -2255,7 +2284,8 @@ function pillFor(key,v){
     "RFQ":"warn","Tender / Bidding":"warn","Direct":"","Government":"info","Private":"",
     "Idea":"","Drafting":"warn","In review":"warn","Scheduled":"info","Published":"accent",
     "Competitor":"alert","Market trend":"info","Pricing":"warn","Regulation":"info",
-    "Client":"accent","Prospect":"info","Partner":"warn"
+    "Client":"accent","Prospect":"info","Partner":"warn",
+    "Developing":"info","On Hold":"warn","Inactive":"","Dormant":"alert","Reactivation":"warn","Closed":""
   })[v] ?? "";
   return `<span class="pill ${cls}">${esc(v)}</span>`;
 }
@@ -3291,7 +3321,7 @@ const FILTERED = {
     ["all",    "All prospects", d=>d.type==="Prospect"],
     ["high",   "High priority", d=>d.type==="Prospect" && d.priority==="High"],
     ["large",  "Large companies", d=>d.type==="Prospect" && ["201–500","500+"].includes(d.companySize)],
-    ["clients","Converted to client", d=>d.type==="Client"]
+    ["clients","Converted to Active", d=>d.type==="Active"]
   ]},
   partners: { col:"accounts", tabs:[
     ["all",         "All partners",  d=>PARTNER_TYPES.includes(d.type)],
@@ -3358,11 +3388,10 @@ function viewFiltered(routeKey){
 function viewBDDashboard(){
   const accts = rows("accounts"), deals = rows("deals"), acts = rows("activities");
   const ms = monthStart();
-  const partners = accts.filter(a=>PARTNER_TYPES.includes(a.type));
-  const newPartners = partners.filter(a=>toDate(a.createdAt) >= ms);
+  const active = accts.filter(a=>a.type==="Active");
+  const newActive = active.filter(a=>toDate(a.createdAt) >= ms);
   const negotiating = deals.filter(d=>d.stage==="Negotiation");
   const tenders = deals.filter(d=>["RFQ","Tender / Bidding"].includes(d.opportunityType) && OPEN_STAGES.includes(d.stage));
-  const newClients = accts.filter(a=>a.type==="Client" && toDate(a.createdAt) >= ms);
   const open = deals.filter(d=>OPEN_STAGES.includes(d.stage));
   const forecast = open.reduce((s,d)=>s+Number(d.value||0)*stageProb(d.stage)/100,0);
   const meetings = acts.filter(a=>a.status!=="Done" && ["Meeting","Presentation","Site Visit"].includes(a.type)
@@ -3370,23 +3399,24 @@ function viewBDDashboard(){
     .sort((a,b)=>toDate(a.dueDate)-toDate(b.dueDate));
   const prospects = accts.filter(a=>a.type==="Prospect");
   const hotProspects = prospects.filter(a=>a.priority==="High");
+  const needsReengagement = accts.filter(a=>["Dormant","Inactive"].includes(a.type));
   const deadlines = deals.filter(d=>{const n=daysUntil(d.submissionDeadline); return n!==null && n>=0;})
     .sort((a,b)=>toDate(a.submissionDeadline)-toDate(b.submissionDeadline));
 
   return `
   <div class="kpis">
-    <div class="kpi accent"><div class="lbl">New partners</div><div class="val">${newPartners.length}</div>
+    <div class="kpi accent"><div class="lbl">New active accounts</div><div class="val">${newActive.length}</div>
       <div class="foot">this month</div></div>
-    <div class="kpi"><div class="lbl">Active partnerships</div><div class="val">${partners.length}</div>
-      <div class="foot">${PARTNER_TYPES.map(t=>`${accts.filter(a=>a.type===t).length} ${t.toLowerCase()}s`).slice(0,2).join(" · ")}</div></div>
+    <div class="kpi"><div class="lbl">Active accounts</div><div class="val">${active.length}</div>
+      <div class="foot">of ${accts.length} total accounts</div></div>
     <div class="kpi warn"><div class="lbl">Under negotiation</div><div class="val">${negotiating.length}</div>
       <div class="foot">${shortMoney(negotiating.reduce((s,d)=>s+Number(d.value||0),0))} in play</div></div>
     <div class="kpi"><div class="lbl">Tender opportunities</div><div class="val">${tenders.length}</div>
       <div class="foot">${shortMoney(tenders.reduce((s,d)=>s+Number(d.value||0),0))} bid value</div></div>
   </div>
   <div class="kpis">
-    <div class="kpi"><div class="lbl">Corporate accounts acquired</div><div class="val">${newClients.length}</div>
-      <div class="foot">converted to client this month</div></div>
+    <div class="kpi ${needsReengagement.length?"warn":""}"><div class="lbl">Needs re-engagement</div><div class="val">${needsReengagement.length}</div>
+      <div class="foot">Dormant or Inactive accounts</div></div>
     <div class="kpi accent"><div class="lbl">Revenue forecast</div><div class="val mono">${shortMoney(forecast)}</div>
       <div class="foot">weighted across ${open.length} open</div></div>
     <div class="kpi"><div class="lbl">Meetings scheduled</div><div class="val">${meetings.length}</div>
@@ -3439,13 +3469,13 @@ function viewBDDashboard(){
         : `<div class="empty"><strong>No priority prospects</strong>Mark a prospect High to surface it here.</div>`}
     </div>
     <div class="card">
-      <div class="card-h"><h3>Partnerships by type</h3><div class="spacer"></div>
+      <div class="card-h"><h3>Accounts by status</h3><div class="spacer"></div>
         <button class="btn sm" data-go="accounts">Customers</button></div>
       <div class="bars">
-        ${PARTNER_TYPES.map(t=>{
+        ${Object.keys(ACCOUNT_STATUS_GUIDE).map(t=>{
           const n = accts.filter(a=>a.type===t).length;
-          const mx = Math.max(...PARTNER_TYPES.map(x=>accts.filter(a=>a.type===x).length), 1);
-          return `<div class="bar-row"><div class="nm">${esc(t)}</div>
+          const mx = Math.max(...Object.keys(ACCOUNT_STATUS_GUIDE).map(x=>accts.filter(a=>a.type===x).length), 1);
+          return `<div class="bar-row"><div class="nm">${ACCOUNT_STATUS_GUIDE[t].emoji} ${esc(t)}</div>
             <div class="bar-track"><div class="bar-fill info" style="width:${n/mx*100}%"></div></div>
             <div class="fig">${n}</div></div>`;
         }).join("")}
@@ -4563,7 +4593,13 @@ function fieldHTML(col,f,d,isNew){
   if (f.type === "textarea") input = `<textarea id="${id}" data-k="${f.k}">${esc(v)}</textarea>`;
   else if (f.type === "select"){
     const opts = f.optsFrom ? (state.settings[f.optsFrom]||[]) : f.opts;
-    input = `<select id="${id}" data-k="${f.k}"><option value="">—</option>${opts.map(o=>opt(o,v)).join("")}</select>`;
+    if (f.statusGuide){
+      const optLabel = o => f.statusGuide[o] ? `${f.statusGuide[o].emoji} ${o}` : o;
+      input = `<select id="${id}" data-k="${f.k}" data-guide="${f.k}"><option value="">—</option>${opts.map(o=>`<option value="${esc(o)}"${o===v?" selected":""}>${esc(optLabel(o))}</option>`).join("")}</select>
+        <div class="hint guide-note" id="${id}-note" style="display:${v && f.statusGuide[v]?"block":"none"}">${v && f.statusGuide[v] ? statusGuideHTML(f.statusGuide[v]) : ""}</div>`;
+    } else {
+      input = `<select id="${id}" data-k="${f.k}"><option value="">—</option>${opts.map(o=>opt(o,v)).join("")}</select>`;
+    }
   }
   else if (f.type === "ref"){
     if (f.refTo === "users"){
@@ -4656,6 +4692,20 @@ function openForm(col, id, preset){
       if (!list.some(r=>r.id===keep)) sel.value = "";
     };
     parent.addEventListener("change", rebuild);
+  });
+
+  // Status dropdowns with a guide (e.g. Account Status): show the
+  // condition + example note the moment a value is picked, and hide it
+  // again if cleared back to "—".
+  document.querySelectorAll("[data-guide]").forEach(sel=>{
+    const f = S.fields.find(x=>x.k===sel.dataset.guide);
+    const note = document.querySelector(`#f-${sel.dataset.guide}-note`);
+    if (!f || !note) return;
+    sel.addEventListener("change", ()=>{
+      const entry = f.statusGuide[sel.value];
+      note.style.display = entry ? "block" : "none";
+      note.innerHTML = entry ? statusGuideHTML(entry) : "";
+    });
   });
 
   const relType = document.querySelector('[data-k="relatedType"]');
