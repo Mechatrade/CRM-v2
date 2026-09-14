@@ -5098,14 +5098,37 @@ function proceedRecord(col, id){
       toast("Approve this costing sheet first — then Proceed creates the quotation.", true);
       return;
     }
-    const f = costingFigures(d);
-    const desc = (d.items && d.items[0] && d.items[0].desc) || d.supplierName || "Costed item";
+    // Multiple costing sheets can share one control number — one per
+    // winning supplier from the same inquiry's canvass. They still add up
+    // to a single quotation: if one already exists for this control
+    // number, open it rather than creating a duplicate; otherwise, every
+    // sheet under this control number needs to be Approved before they're
+    // combined into one quotation, one line per sheet.
+    const existingQuote = d.controlNo ? rows("quotations").find(q=>q.controlNo===d.controlNo) : null;
+    if (existingQuote){
+      toast("A quotation already exists for this control number — opening it.");
+      openDetail("quotations", existingQuote.id);
+      return;
+    }
+    const siblings = d.controlNo ? rows("costing").filter(c=>c.controlNo===d.controlNo) : [d];
+    const pending = siblings.filter(c=>c.status!=="Approved");
+    if (pending.length){
+      toast(`${pending.length} of ${siblings.length} costing sheet(s) sharing ${d.controlNo} still need approval before the quotation can be created.`, true);
+      return;
+    }
+    const items = siblings.map(c=>{
+      const cf = costingFigures(c);
+      const desc = (c.items && c.items[0] && c.items[0].desc) || c.supplierName || "Costed item";
+      return { desc, qty:1, price: Math.round(cf.quoted*100)/100 };
+    });
+    const first = siblings[0] || d;
+    const title = items.length===1 ? items[0].desc : `${items.length} items — ${d.controlNo}`;
     openQuoteForm(null, {
       controlNo: d.controlNo || null, costingId: id,
-      accountId: d.accountId || null, dealId: d.dealId || null,
-      title: `Quotation for ${desc}`,
+      accountId: first.accountId || null, dealId: first.dealId || null,
+      title: `Quotation for ${title}`,
       ownerId: d.ownerId,
-      items: [{ desc, qty:1, price: Math.round(f.quoted*100)/100 }]
+      items
     });
   }
 }
@@ -6474,6 +6497,18 @@ function openCostingDetail(id){
         ${d.status==="Rejected" ? `<div class="r"><div class="k">Rejected by</div><div class="v">${personCell(d.rejectedBy)}
           <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(d.rejectedAt)}</div></div></div>` : ""}
       </div>
+
+      ${(()=>{
+        const siblings = d.controlNo ? rows("costing").filter(c=>c.controlNo===d.controlNo && c.id!==d.id) : [];
+        if (!siblings.length) return "";
+        const pending = siblings.filter(c=>c.status!=="Approved").length;
+        const quoted = rows("quotations").some(q=>q.controlNo===d.controlNo);
+        return `<p class="note" style="margin-top:10px">
+          ${quoted ? `A quotation already exists for control no. ${esc(d.controlNo)} — Proceed will open it instead of making a new one.`
+          : pending ? `${siblings.length+1} costing sheets share control no. ${esc(d.controlNo)} — ${pending} more still need approval before they combine into one quotation.`
+          : `${siblings.length+1} costing sheets share control no. ${esc(d.controlNo)} and are all Approved — Proceed will combine them into a single quotation.`}
+        </p>`;
+      })()}
 
       <table class="items" style="margin-top:18px">
         <thead><tr><th>Item</th><th style="text-align:right">Qty</th>
