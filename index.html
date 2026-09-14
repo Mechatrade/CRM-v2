@@ -1548,6 +1548,26 @@ function costingFigures(d){
   return { items, intl, rate, goodsFx, goodsPhp, teleFx, shipFx, freightFx, tele, ship, freight, deliv,
            landedFx, landed, cost, gp, sell, markup, contingency, quoted, profit: sell - cost };
 }
+/* A costing sheet applies one blended GP%/contingency across all its
+   items, so there's no single "selling price" per item stored anywhere —
+   just the sheet's total. This splits that total back into one quotation
+   line per original item, proportional to each item's share of the
+   sheet's base cost (equal split if there's no cost basis to go by), so a
+   multi-item costing sheet hands off every item to the quotation instead
+   of collapsing them into one line and losing the rest. */
+function costingItemQuotes(c){
+  const f = costingFigures(c);
+  const items = Array.isArray(c.items) ? c.items : [];
+  if (!items.length) return [];
+  const baseAmounts = items.map(it=> Number(it.qty||0)*Number(it.price||0));
+  const totalBase = baseAmounts.reduce((s,a)=>s+a,0);
+  return items.map((it,i)=>{
+    const qty = Number(it.qty||0) || 1;
+    const share = totalBase > 0 ? baseAmounts[i]/totalBase : 1/items.length;
+    const lineTotal = f.quoted * share;
+    return { desc: it.desc || "Costed item", qty, price: Math.round((lineTotal/qty)*100)/100 };
+  });
+}
 function fmtDate(d){
   if(!d) return "—";
   const dt = d?.toDate ? d.toDate() : new Date(d);
@@ -5116,11 +5136,7 @@ function proceedRecord(col, id){
       toast(`${pending.length} of ${siblings.length} costing sheet(s) sharing ${d.controlNo} still need approval before the quotation can be created.`, true);
       return;
     }
-    const items = siblings.map(c=>{
-      const cf = costingFigures(c);
-      const desc = (c.items && c.items[0] && c.items[0].desc) || c.supplierName || "Costed item";
-      return { desc, qty:1, price: Math.round(cf.quoted*100)/100 };
-    });
+    const items = siblings.flatMap(c=> costingItemQuotes(c));
     const first = siblings[0] || d;
     const title = items.length===1 ? items[0].desc : `${items.length} items — ${d.controlNo}`;
     openQuoteForm(null, {
