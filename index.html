@@ -1424,6 +1424,16 @@ function shortMoney(n){
    landed cost (+ telegraphic/shipping/freight, converted to PHP), total
    cost (+ local delivery), then a GP-based selling price and contingency. */
 const CUR_SYM = { USD:"$", CNY:"¥", EUR:"€", JPY:"¥", SGD:"S$", KRW:"₩", TWD:"NT$", PHP:"₱" };
+/* Telegraphic transfer charges follow a fixed bracket based on the total
+   amount quoted by the supplier (in their own currency, before conversion)
+   — not typed in by hand. An admin can still override it; once they do,
+   it stops auto-following the bracket for that costing sheet. */
+function telegraphicBracket(quotedTotal){
+  const n = Number(quotedTotal||0);
+  if (n <= 4000) return 50;
+  if (n <= 5000) return 70;
+  return 85;
+}
 /* Inquiry canvass sheet: each supplier is tagged Local or International.
    International suppliers get an "Origin" country, which suggests a
    default currency (still editable) — same currency list Product Costing
@@ -6227,6 +6237,7 @@ function openCostingForm(id, preset){
   let otherAllowances = Array.isArray(d.otherAllowances) ? d.otherAllowances.map(a=>({...a})) : [];
   let nextAllowId = 1;
   otherAllowances = otherAllowances.map(a=>({ ...a, _id: nextAllowId++ }));
+  let teleManuallySet = !!d.telegraphicOverride;
   const accts = rows("accounts").sort((a,b)=>(a.name||"").localeCompare(b.name||""));
   const dls   = rows("deals").sort((a,b)=>(a.title||"").localeCompare(b.title||""));
   const csPeso = n => "₱" + Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -6278,8 +6289,8 @@ function openCostingForm(id, preset){
             ${["USD","CNY","EUR","JPY","SGD","KRW","TWD"].map(c=>opt(c, d.supplierCurrency||"USD")).join("")}
           </select></div>
         <div class="field intl-only"><label for="co-rate">Conversion rate to PHP</label>
-          <input id="co-rate" type="number" min="0" step="any" value="${esc(d.conversionRate??"")}">
-          <span class="hint" id="co-rate-hint"></span></div>
+          <input id="co-rate" type="number" min="0" step="any" value="${esc(d.conversionRate??"")}"${isAdmin()?"":" readonly"}>
+          <span class="hint" id="co-rate-hint">${isAdmin()?"":"Only an administrator can change this."}</span></div>
       </div>
 
       <div class="eyebrow" style="margin:20px 0 2px">Supplier quoted price
@@ -6297,8 +6308,9 @@ function openCostingForm(id, preset){
       <div class="eyebrow" style="margin:20px 0 2px">Costs on top</div>
       <div class="fgrid">
         <div class="field intl-only"><label for="co-tele">Telegraphic charges</label>
-          <input id="co-tele" type="number" min="0" step="any" value="${esc(d.telegraphicCharge??"")}">
-          <span class="hint" id="co-conv-tele"></span></div>
+          <input id="co-tele" type="number" min="0" step="any" value="${esc(d.telegraphicCharge??"")}"${isAdmin()?"":" readonly"}>
+          <span class="hint" id="co-conv-tele"></span>
+          ${isAdmin()?`<button class="btn sm" id="co-tele-reset" type="button" style="margin-top:6px">↺ Use bracket value</button>`:""}</div>
         <div class="field"><label for="co-ship">Shipping cost</label>
           <input id="co-ship" type="number" min="0" step="any" value="${esc(d.shippingCost??"")}">
           <span class="hint" id="co-conv-ship"></span></div>
@@ -6417,11 +6429,20 @@ function openCostingForm(id, preset){
   }
   function recalc(){
     applyIntl();
+    // Telegraphic charges follow the bracket table based on the goods
+    // total in the supplier's own currency, unless an admin has typed
+    // their own number in — that override sticks until reset.
+    if (isIntl() && !teleManuallySet){
+      const goodsNow = items.reduce((s,l)=> s + Number(l.qty||0)*Number(l.price||0), 0);
+      $("#co-tele").value = telegraphicBracket(goodsNow);
+    }
     const f = costingFigures(draftDoc());
     const sym = CUR_SYM[curOf()] || (curOf()+" ");
     $("#co-th-unit").textContent = `Unit price (${curOf()})`;
     $("#co-th-fx").textContent   = `Amount (${curOf()})`;
-    $("#co-rate-hint").textContent = `1 ${curOf()} = ₱${(Number($("#co-rate").value)||0).toLocaleString()}. Update to today's rate.`;
+    $("#co-rate-hint").textContent = isAdmin()
+      ? `1 ${curOf()} = ₱${(Number($("#co-rate").value)||0).toLocaleString()}. Update to today's rate.`
+      : "Only an administrator can change this.";
     document.querySelectorAll("#co-items tr[data-id]").forEach(tr=>{
       const line = items.find(x=>x._id === Number(tr.dataset.id));
       const fxOut = tr.querySelector('[data-out="fx"]'), phpOut = tr.querySelector('[data-out="php"]');
@@ -6434,7 +6455,17 @@ function openCostingForm(id, preset){
     };
     conv("#co-conv-ship", f.ship, "Warehouse to shipping port or forwarder.");
     conv("#co-conv-freight", f.freight, "Supplier's country to the Philippines.");
-    conv("#co-conv-tele", f.tele, "Bank and telegraphic transfer fees.");
+    if (isIntl()){
+      const goodsNow = items.reduce((s,l)=> s + Number(l.qty||0)*Number(l.price||0), 0);
+      const bracket = telegraphicBracket(goodsNow);
+      $("#co-conv-tele").textContent = teleManuallySet
+        ? `= ${csPeso(f.tele)} · Manually set (bracket would be ${curOf()} ${bracket})${isAdmin()?"":" — only an administrator can change this"}`
+        : `= ${csPeso(f.tele)} · Bracket: ${curOf()} 0–4,000 → 50, 4,000–5,000 → 70, over 5,000 → 85`;
+      const resetBtn = $("#co-tele-reset");
+      if (resetBtn) resetBtn.style.display = teleManuallySet ? "" : "none";
+    } else {
+      $("#co-conv-tele").textContent = "";
+    }
     $("#co-markup").value = f.markup.toFixed(2);
     $("#co-sell").value   = csPeso(f.sell);
     const both = (fxv,phpv) => isIntl() ? `${csFx(fxv,sym)} · ${csPeso(phpv)}` : csPeso(phpv);
@@ -6455,10 +6486,17 @@ function openCostingForm(id, preset){
 
   $("#co-add").onclick = ()=>{ items.push({ _id: nextLineId++, desc:"", qty:1, price:"" }); drawItems(); recalc(); };
   $("#co-add-allow").onclick = ()=>{ otherAllowances.push({ _id: nextAllowId++, label:"", amount:"" }); drawAllowances(); recalc(); };
-  ["co-type","co-cur","co-rate","co-tele","co-ship","co-freight","co-deliv","co-gp","co-cont"].forEach(fid=>{
+  ["co-type","co-cur","co-rate","co-ship","co-freight","co-deliv","co-gp","co-cont"].forEach(fid=>{
     $("#"+fid).addEventListener("input", recalc);
     $("#"+fid).addEventListener("change", recalc);
   });
+  // Typing into Telegraphic charges (admin only — it's readonly for
+  // everyone else) marks it as manually overridden, so the bracket
+  // auto-fill stops touching it until reset.
+  $("#co-tele").addEventListener("input", ()=>{ teleManuallySet = true; recalc(); });
+  $("#co-tele").addEventListener("change", ()=>{ teleManuallySet = true; recalc(); });
+  const teleReset = $("#co-tele-reset");
+  if (teleReset) teleReset.onclick = ()=>{ teleManuallySet = false; recalc(); };
   drawItems(); drawAllowances(); recalc();
 
   const del = document.querySelector("#co-del");
@@ -6486,7 +6524,8 @@ function openCostingForm(id, preset){
       conversionRate: Number($("#co-rate").value||0)||null,
       items: items2,
       itemsSummary: items2[0].desc + (items2.length>1?` +${items2.length-1} more`:""),
-      telegraphicCharge: Number($("#co-tele").value||0)||null, shippingCost: Number($("#co-ship").value||0)||null,
+      telegraphicCharge: Number($("#co-tele").value||0)||null, telegraphicOverride: teleManuallySet,
+      shippingCost: Number($("#co-ship").value||0)||null,
       freightCost: Number($("#co-freight").value||0)||null, deliveryFee: Number($("#co-deliv").value||0)||null,
       otherAllowances: collectAllowances().filter(a=>a.label || a.amount),
       gpPct: Number($("#co-gp").value||0), contingencyPct: Number($("#co-cont").value||0)||null,
