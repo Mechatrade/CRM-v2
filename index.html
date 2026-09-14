@@ -1537,16 +1537,18 @@ function costingFigures(d){
   const ship    = shipFx * rate;
   const freight = freightFx * rate;
   const deliv   = intl ? Number(d.deliveryFee||0) : 0;      // billed locally, already in pesos
+  const otherAllowances = Array.isArray(d.otherAllowances) ? d.otherAllowances : [];
+  const otherTotal = otherAllowances.reduce((s,a)=> s + Number(a.amount||0), 0);  // billed locally too, always pesos
   const landedFx = goodsFx + teleFx + shipFx + freightFx;
   const landed   = goodsPhp + tele + ship + freight;
-  const cost = landed + deliv;
+  const cost = landed + deliv + otherTotal;
   const gp = Math.min(99, Number(d.gpPct||0));
   const sell = gp < 100 ? cost / (1 - gp/100) : cost;
   const markup = cost ? ((sell - cost)/cost)*100 : 0;
   const contingency = sell * (Number(d.contingencyPct||0)/100);
   const quoted = sell + contingency;
   return { items, intl, rate, goodsFx, goodsPhp, teleFx, shipFx, freightFx, tele, ship, freight, deliv,
-           landedFx, landed, cost, gp, sell, markup, contingency, quoted, profit: sell - cost };
+           otherAllowances, otherTotal, landedFx, landed, cost, gp, sell, markup, contingency, quoted, profit: sell - cost };
 }
 /* A costing sheet applies one blended GP%/contingency across all its
    items, so there's no single "selling price" per item stored anywhere —
@@ -6222,6 +6224,9 @@ function openCostingForm(id, preset){
   let items = Array.isArray(d.items) && d.items.length ? d.items.map(i=>({...i})) : [{desc:"",qty:1,price:""}];
   let nextLineId = 1;
   items = items.map(i=>({ ...i, _id: nextLineId++ }));
+  let otherAllowances = Array.isArray(d.otherAllowances) ? d.otherAllowances.map(a=>({...a})) : [];
+  let nextAllowId = 1;
+  otherAllowances = otherAllowances.map(a=>({ ...a, _id: nextAllowId++ }));
   const accts = rows("accounts").sort((a,b)=>(a.name||"").localeCompare(b.name||""));
   const dls   = rows("deals").sort((a,b)=>(a.title||"").localeCompare(b.title||""));
   const csPeso = n => "₱" + Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -6308,6 +6313,11 @@ function openCostingForm(id, preset){
           <span class="hint">Port to your warehouse. No conversion applies.</span></div>
       </div>
 
+      <div class="eyebrow" style="margin:20px 0 8px">Other allowances
+        <span style="text-transform:none;letter-spacing:0;font-family:var(--sans);color:var(--faint);font-size:11px"> — in ₱, no conversion applies</span></div>
+      <div id="co-allowances"></div>
+      <button class="btn sm" id="co-add-allow" type="button">+ Add Other Allowances</button>
+
       <div class="eyebrow" style="margin:20px 0 2px">Mark-up and selling price</div>
       <div class="split">
         <div>
@@ -6355,12 +6365,16 @@ function openCostingForm(id, preset){
       price: Number(tr.querySelector('[data-f="price"]').value||0)
     }));
   }
+  function collectAllowances(){
+    return otherAllowances.map(a=>({ label: a.label||"", amount: Number(a.amount||0) }));
+  }
   function draftDoc(){
     return {
       purchaseType: $("#co-type").value, supplierCurrency: $("#co-cur").value,
       conversionRate: Number($("#co-rate").value||0), items: collectItems(),
       telegraphicCharge: Number($("#co-tele").value||0), shippingCost: Number($("#co-ship").value||0),
       freightCost: Number($("#co-freight").value||0), deliveryFee: Number($("#co-deliv").value||0),
+      otherAllowances: collectAllowances(),
       gpPct: Number($("#co-gp").value||0), contingencyPct: Number($("#co-cont").value||0)
     };
   }
@@ -6379,6 +6393,26 @@ function openCostingForm(id, preset){
       if (items.length <= 1) return;
       items = items.filter(x=>x._id !== Number(b.dataset.delLine));
       drawItems(); recalc();
+    });
+  }
+  function drawAllowances(){
+    const wrap = $("#co-allowances");
+    wrap.innerHTML = otherAllowances.length ? otherAllowances.map(a=>`
+      <div class="allow-row" data-id="${a._id}" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <input data-f="label" value="${esc(a.label||"")}" placeholder="e.g. Handling fee, permit, insurance" style="flex:1">
+        <input data-f="amount" type="number" min="0" step="any" value="${esc(a.amount??"")}" placeholder="0.00" style="width:130px">
+        <button class="x" data-del-allow="${a._id}" title="Remove">×</button>
+      </div>`).join("") : `<p class="note" style="margin:0 0 8px">No other allowances added.</p>`;
+    wrap.querySelectorAll("[data-id]").forEach(row=>{
+      const a = otherAllowances.find(x=>x._id === Number(row.dataset.id));
+      row.querySelectorAll("[data-f]").forEach(inp=> inp.addEventListener("input", ()=>{
+        a[inp.dataset.f] = inp.type==="number" ? Number(inp.value||0) : inp.value;
+        recalc();
+      }));
+      row.querySelector("[data-del-allow]").onclick = ()=>{
+        otherAllowances = otherAllowances.filter(x=>x._id !== a._id);
+        drawAllowances(); recalc();
+      };
     });
   }
   function recalc(){
@@ -6411,6 +6445,7 @@ function openCostingForm(id, preset){
       ${isIntl()?`<div class="row"><span>Freight charges</span><span>${both(f.freightFx, f.freight)}</span></div>`:""}
       <div class="row sub"><span>Landed cost</span><span>${both(f.landedFx, f.landed)}</span></div>
       ${isIntl()?`<div class="row"><span>Delivery fee</span><span>${csPeso(f.deliv)}</span></div>`:""}
+      ${f.otherTotal?`<div class="row"><span>Other allowances</span><span>${csPeso(f.otherTotal)}</span></div>`:""}
       <div class="row grand"><span>Total cost</span><span>${csPeso(f.cost)}</span></div>
       <div class="row" style="margin-top:9px"><span>Selling price</span>
         <span style="color:var(--accent);font-weight:600">${csPeso(f.sell)}</span></div>
@@ -6419,11 +6454,12 @@ function openCostingForm(id, preset){
   }
 
   $("#co-add").onclick = ()=>{ items.push({ _id: nextLineId++, desc:"", qty:1, price:"" }); drawItems(); recalc(); };
+  $("#co-add-allow").onclick = ()=>{ otherAllowances.push({ _id: nextAllowId++, label:"", amount:"" }); drawAllowances(); recalc(); };
   ["co-type","co-cur","co-rate","co-tele","co-ship","co-freight","co-deliv","co-gp","co-cont"].forEach(fid=>{
     $("#"+fid).addEventListener("input", recalc);
     $("#"+fid).addEventListener("change", recalc);
   });
-  drawItems(); recalc();
+  drawItems(); drawAllowances(); recalc();
 
   const del = document.querySelector("#co-del");
   if (del) del.onclick = async ()=>{ if (await deleteRecord("costing", id)) closeModal(true); };
@@ -6452,6 +6488,7 @@ function openCostingForm(id, preset){
       itemsSummary: items2[0].desc + (items2.length>1?` +${items2.length-1} more`:""),
       telegraphicCharge: Number($("#co-tele").value||0)||null, shippingCost: Number($("#co-ship").value||0)||null,
       freightCost: Number($("#co-freight").value||0)||null, deliveryFee: Number($("#co-deliv").value||0)||null,
+      otherAllowances: collectAllowances().filter(a=>a.label || a.amount),
       gpPct: Number($("#co-gp").value||0), contingencyPct: Number($("#co-cont").value||0)||null,
       totalCost: f.cost, markupPct: f.markup, sellingPrice: f.sell, quotedPrice: f.quoted,
       remarks: $("#co-remarks").value||null,
@@ -6537,6 +6574,14 @@ function openCostingDetail(id){
         </tr>`).join("")}</tbody>
       </table>
 
+      ${(d.otherAllowances||[]).length ? `<table class="items" style="margin-top:10px">
+        <thead><tr><th>Other allowances</th><th style="text-align:right">Amount</th></tr></thead>
+        <tbody>${d.otherAllowances.map(a=>`<tr>
+          <td style="padding:7px 6px">${esc(a.label||"—")}</td>
+          <td class="num" style="padding:7px 6px">${csPeso(a.amount)}</td>
+        </tr>`).join("")}</tbody>
+      </table>` : ""}
+
       <div class="totals" style="margin-top:14px">
         <div class="row"><span>Purchase cost</span><span>${both(f.goodsFx, f.goodsPhp)}</span></div>
         ${f.intl?`<div class="row"><span>Telegraphic charges</span><span>${both(f.teleFx, f.tele)}</span></div>`:""}
@@ -6544,6 +6589,7 @@ function openCostingDetail(id){
         ${f.intl?`<div class="row"><span>Freight charges</span><span>${both(f.freightFx, f.freight)}</span></div>`:""}
         <div class="row sub"><span>Landed cost</span><span>${both(f.landedFx, f.landed)}</span></div>
         ${f.intl?`<div class="row"><span>Delivery fee</span><span>${csPeso(f.deliv)}</span></div>`:""}
+        ${f.otherTotal?`<div class="row"><span>Other allowances</span><span>${csPeso(f.otherTotal)}</span></div>`:""}
         <div class="row grand"><span>Total cost</span><span>${csPeso(f.cost)}</span></div>
         <div class="row" style="margin-top:9px"><span>Selling price</span>
           <span style="color:var(--accent);font-weight:600">${csPeso(f.sell)}</span></div>
