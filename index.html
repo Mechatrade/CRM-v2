@@ -1263,17 +1263,13 @@ const SCHEMAS = {
       { k:"relatedType",    l:"Inquiry from",     type:"select", opts:["Lead","Account"], def:"Lead", table:true },
       { k:"relatedId",      l:"Lead / Customer",  type:"ref",    refTo:"dynamic", table:true },
       { k:"contactId",      l:"Contact person",   type:"ref",    refTo:"contacts" },
-      { k:"source",         l:"Source",           type:"select", optsFrom:"sources" },
       { k:"inquiryDate",    l:"Inquiry date",     type:"date",   table:true },
       { k:"itemsSummary",      l:"Items",             type:"text", table:true },
       { k:"supplierSummary",   l:"Suppliers canvassed", type:"text", table:true },
       { k:"selectedSupplierName", l:"Selected",       type:"text", table:true },
-      { k:"status",         l:"Status",           type:"select", opts:["Open","Noted","Approved","Quoted","Closed - Won","Closed - Lost"], def:"Open", table:true },
+      { k:"status",         l:"Status",           type:"select",
+        opts:["Open","For Sourced Out","Canvassed","Proceed Costing","No Quote"], def:"Open", table:true },
       { k:"ownerId",        l:"Owner",            type:"ref",    refTo:"users", table:true, assignOnly:true },
-      { k:"notedBy",        l:"Noted by",         type:"ref",    refTo:"users" },
-      { k:"notedAt",        l:"Noted on",         type:"date" },
-      { k:"approvedBy",     l:"Approved by",      type:"ref",    refTo:"users" },
-      { k:"approvedAt",     l:"Approved on",      type:"date" },
       { k:"notes",          l:"Notes",            type:"textarea", full:true }
     ]
   },
@@ -4377,9 +4373,8 @@ function wireView(){
           const q = state.data.quotations.get(id);
           if (q) await syncDealFromQuote({ ...q, id, status: el.value }, el.value);
         }
-        if (col === "inquiries"){
-          if (el.value === "Noted") await updateDoc(doc(db,col,id), { notedBy: myUid(), notedAt: serverTimestamp() });
-          if (el.value === "Approved") await updateDoc(doc(db,col,id), { approvedBy: myUid(), approvedAt: serverTimestamp() });
+        if (col === "inquiries" && el.value === "Proceed Costing"){
+          proceedRecord("inquiries", id);
         }
       }catch(e){
         if (prev) el.value = prev;
@@ -5716,15 +5711,12 @@ function openInquiryForm(id, preset){
         <div class="field"><label for="iq-contact">Contact person</label>
           <select id="iq-contact"><option value="">—</option></select>
           <span class="hint">Auto-filtered to the selected customer's contacts.</span></div>
-        <div class="field"><label for="iq-source">Source</label>
-          <select id="iq-source"><option value="">—</option>${(state.settings.sources||[]).map(o=>opt(o,d.source||"")).join("")}</select></div>
         <div class="field"><label for="iq-date">Inquiry date</label>
           <input id="iq-date" type="date" value="${esc(d.inquiryDate||todayISO())}"></div>
-        <div class="field"><label for="iq-status">Status</label>
-          <select id="iq-status">${["Open","Noted","Approved","Quoted","Closed - Won","Closed - Lost"].map(o=>opt(o,d.status||"Open")).join("")}</select></div>
         <div class="field"><label for="iq-owner">Owner</label>
           <select id="iq-owner"${isManager()?"":" disabled"}>
-            ${isManager()?ownerOptions(d.ownerId||myUid()):`<option value="${myUid()}">${esc(state.profile.displayName||"You")}</option>`}</select></div>
+            ${isManager()?ownerOptions(d.ownerId||myUid()):`<option value="${myUid()}">${esc(state.profile.displayName||"You")}</option>`}</select>
+          ${id?`<span class="hint">Status: <strong>${esc(d.status||"Open")}</strong> — change it from the list view.</span>`:""}</div>
       </div>
 
       <div class="eyebrow" style="margin:20px 0 2px">Item list inquiry</div>
@@ -5794,11 +5786,21 @@ function openInquiryForm(id, preset){
         recalc();
       }));
       // Plain Enter in the description does nothing (it's easy to hit by
-      // accident while typing a long spec); Ctrl+Enter (Cmd+Enter on Mac)
-      // starts a new line, same as the rest of the app's Notes fields.
+      // accident while typing a long spec). Ctrl+Enter (Cmd+Enter on Mac)
+      // starts a new line — browsers don't do this on their own even with
+      // the modifier held, so the newline is inserted by hand at the
+      // cursor, same as the Quotation form's item description field.
       const descBox = card.querySelector('[data-f="desc"]');
       if (descBox) descBox.addEventListener("keydown", e=>{
-        if (e.key === "Enter" && !e.ctrlKey && !e.metaKey) e.preventDefault();
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        if (e.ctrlKey || e.metaKey){
+          const p = descBox.selectionStart, q2 = descBox.selectionEnd;
+          descBox.value = descBox.value.slice(0,p) + "\n" + descBox.value.slice(q2);
+          descBox.selectionStart = descBox.selectionEnd = p + 1;
+          line.desc = descBox.value;
+          recalc();
+        }
       });
       const delBtn = card.querySelector("[data-del-line]");
       delBtn.onclick = ()=>{ if (items.length<=1) return; items = items.filter(x=>x._id!==line._id); render(); };
@@ -5989,8 +5991,7 @@ function openInquiryForm(id, preset){
       subject: $("#iq-subject").value,
       relatedType: $("#iq-reltype").value, relatedId: $("#iq-relid").value || null,
       contactId: $("#iq-contact").value || null,
-      source: $("#iq-source").value || null,
-      inquiryDate: $("#iq-date").value || null, status: $("#iq-status").value,
+      inquiryDate: $("#iq-date").value || null, status: d.status || "Open",
       ownerId: (isManager() ? $("#iq-owner").value : d.ownerId) || myUid(),
       items: finalizeItems(),
       suppliers,
@@ -6028,8 +6029,7 @@ function openInquiryForm(id, preset){
     const payload = {
       subject, relatedType: $("#iq-reltype").value, relatedId: $("#iq-relid").value || null,
       contactId: $("#iq-contact").value || null,
-      source: $("#iq-source").value||null,
-      inquiryDate: $("#iq-date").value || null, status: $("#iq-status").value,
+      inquiryDate: $("#iq-date").value || null,
       ownerId, department: owner?.department || state.profile.department,
       suppliers: suppliers2, items: items2,
       selectedSuppliers: finalCombo.usedSuppliers,
@@ -6043,6 +6043,11 @@ function openInquiryForm(id, preset){
       updatedAt: serverTimestamp()
     };
     if (id) payload.controlNo = $("#iq-control")?.value.trim() || d.controlNo || null;
+    // Status is never set from this form — a new inquiry always starts
+    // Open, and every later stage (For Sourced Out, Canvassed, Proceed
+    // Costing, No Quote) is set from the list view's inline dropdown, so
+    // editing details here can never accidentally move it backward.
+    if (!id) payload.status = "Open";
     $("#iq-save").disabled = true;
     try{
       if (id) await tracked(updateDoc(doc(db,"inquiries",id), payload));
@@ -6087,14 +6092,9 @@ function openInquiryDetail(id){
         ${d.controlNo ? `<div class="r"><div class="k">Control No.</div><div class="v mono" style="font-size:13px">${esc(d.controlNo)}</div></div>` : ""}
         <div class="r"><div class="k">Inquiry from</div><div class="v">${esc(refLabel("dynamic",d.relatedId,d))} <span class="pill">${esc(d.relatedType||"Lead")}</span></div></div>
         <div class="r"><div class="k">Contact person</div><div class="v">${esc(recordTitle("contacts",d.contactId))}</div></div>
-        <div class="r"><div class="k">Source</div><div class="v">${esc(d.source||"—")}</div></div>
         <div class="r"><div class="k">Inquiry date</div><div class="v mono" style="font-size:13px">${fmtDate(d.inquiryDate)}</div></div>
         <div class="r"><div class="k">Status</div><div class="v">${pillFor("status",d.status)}</div></div>
         <div class="r"><div class="k">Owner</div><div class="v">${personCell(d.ownerId)}</div></div>
-        ${d.notedBy ? `<div class="r"><div class="k">Noted by</div><div class="v">${personCell(d.notedBy)}
-          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(d.notedAt)}</div></div></div>` : ""}
-        ${d.approvedBy ? `<div class="r"><div class="k">Approved by</div><div class="v">${personCell(d.approvedBy)}
-          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(d.approvedAt)}</div></div></div>` : ""}
       </div>
 
       <div class="eyebrow" style="margin:18px 0 8px">Item list inquiry</div>
