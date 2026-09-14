@@ -1022,7 +1022,8 @@ const DEFAULT_SETTINGS = {
   companyWeb: "",
   companyTin: "",
   bankDetails: "",
-  quoteTerms: "Prices are valid for 30 days from the date of issue.\nDelivery: to be confirmed upon receipt of purchase order.\nPayment: 50% down payment, balance upon delivery."
+  quoteTerms: "Prices are valid for 30 days from the date of issue.\nDelivery: to be confirmed upon receipt of purchase order.\nPayment: 50% down payment, balance upon delivery.",
+  fxRates: {}   // e.g. { USD: 56, EUR: 61 } — admin-set defaults for Product Costing's conversion rate
 };
 const LOGO_PRINT = "./logo-print.png";
 
@@ -4293,6 +4294,16 @@ function viewSettings(){
       <div class="eyebrow" style="margin:4px 0 8px">Quotation series</div>
       <div id="series-panel" style="margin-bottom:22px">${seriesPanel()}</div>
 
+      <div class="eyebrow" style="margin:4px 0 10px">Conversion rates to PHP</div>
+      <p class="note" style="margin:0 0 12px">Used to pre-fill Product Costing's "Conversion rate to PHP" for a new
+        International sheet, or whenever the supplier currency there is changed with the field still blank.
+        Costing itself stays admin-only to edit per sheet — these are just the starting defaults.</p>
+      <div class="fgrid" style="margin-bottom:22px">
+        ${["USD","CNY","EUR","JPY","SGD","KRW","TWD"].map(c=>`
+          <div class="field"><label for="s-fx-${c}">1 ${c} = ₱</label>
+            <input id="s-fx-${c}" type="number" min="0" step="any" value="${esc(s.fxRates?.[c]??"")}"></div>`).join("")}
+      </div>
+
       ${LISTS.map(L=>`<div class="field full" style="margin-bottom:16px">
         <label for="s-${L.k}">${esc(L.l)}</label>
         <textarea id="s-${L.k}" style="min-height:84px">${esc((s[L.k]||[]).join("\n"))}</textarea>
@@ -4675,6 +4686,8 @@ async function saveSettings(){
     managerEdit: $("#s-manageredit").value === "true",
     ...Object.fromEntries(["companyName","companyAddress","companyPhone","companyEmail",
       "companyWeb","companyTin","bankDetails","quoteTerms"].map(k=>[k, $("#s-"+k).value])),
+    fxRates: Object.fromEntries(["USD","CNY","EUR","JPY","SGD","KRW","TWD"]
+      .map(c=>[c, Number($("#s-fx-"+c).value||0)]).filter(([,v])=>v>0)),
     ...Object.fromEntries(LISTS.map(L=>[L.k, $("#s-"+L.k).value.split("\n").map(s=>s.trim()).filter(Boolean)]))
   };
   try{ await setDoc(doc(db,"settings","config"), payload, { merge:true }); toast("Settings saved"); }
@@ -6289,7 +6302,7 @@ function openCostingForm(id, preset){
             ${["USD","CNY","EUR","JPY","SGD","KRW","TWD"].map(c=>opt(c, d.supplierCurrency||"USD")).join("")}
           </select></div>
         <div class="field intl-only"><label for="co-rate">Conversion rate to PHP</label>
-          <input id="co-rate" type="number" min="0" step="any" value="${esc(d.conversionRate??"")}"${isAdmin()?"":" readonly"}>
+          <input id="co-rate" type="number" min="0" step="any" value="${esc(d.conversionRate ?? state.settings.fxRates?.[d.supplierCurrency||"USD"] ?? "")}"${isAdmin()?"":" readonly"}>
           <span class="hint" id="co-rate-hint">${isAdmin()?"":"Only an administrator can change this."}</span></div>
       </div>
 
@@ -6486,9 +6499,20 @@ function openCostingForm(id, preset){
 
   $("#co-add").onclick = ()=>{ items.push({ _id: nextLineId++, desc:"", qty:1, price:"" }); drawItems(); recalc(); };
   $("#co-add-allow").onclick = ()=>{ otherAllowances.push({ _id: nextAllowId++, label:"", amount:"" }); drawAllowances(); recalc(); };
-  ["co-type","co-cur","co-rate","co-ship","co-freight","co-deliv","co-gp","co-cont"].forEach(fid=>{
+  ["co-type","co-rate","co-ship","co-freight","co-deliv","co-gp","co-cont"].forEach(fid=>{
     $("#"+fid).addEventListener("input", recalc);
     $("#"+fid).addEventListener("change", recalc);
+  });
+  // Changing the supplier currency pre-fills the rate from Settings'
+  // defaults — but only when the rate is still blank, so it never
+  // overwrites a number someone actually typed in.
+  $("#co-cur").addEventListener("change", ()=>{
+    const rateInp = $("#co-rate");
+    if (!Number(rateInp.value)){
+      const def = state.settings.fxRates?.[$("#co-cur").value];
+      if (def) rateInp.value = def;
+    }
+    recalc();
   });
   // Typing into Telegraphic charges (admin only — it's readonly for
   // everyone else) marks it as manually overridden, so the bracket
