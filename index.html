@@ -1900,10 +1900,11 @@ function paintMe(){
 /*    Queries are shaped to match the security rules exactly, so a     */
 /*    staff member's browser never even asks for other people's rows.  */
 /* ------------------------------------------------------------------ */
-/* Customers and their contacts are one shared registry, so a company is a
-   single record no matter which department first met them. Everything else
-   stays scoped to the person or their department. */
-const SHARED_COLLECTIONS = ["accounts","contacts","products","suppliers"];
+/* Customers stay one shared registry, so a company is a single record no
+   matter which department first met them. Contacts are narrower — visible
+   only to whoever owns/created them, the parent account's manager, or a
+   manager overseeing that department (see canSee() in the rules). */
+const SHARED_COLLECTIONS = ["accounts","products","suppliers"];
 function scopeQueries(col){
   const base = collection(db, col);
   if (isAdmin() || SHARED_COLLECTIONS.includes(col)) return [ query(base) ];
@@ -5240,11 +5241,16 @@ async function autoSeedContact({ contactName, jobTitle, email, phone, accountId,
     norm(`${c.firstName} ${c.lastName}`) === norm(full)
     && (accountId ? c.accountId === accountId : !c.accountId));
   if (existing) return;
+  // Same rule the rest of the app follows: a record tied to a customer
+  // carries that customer's manager, so the person responsible for the
+  // relationship can always see it — contacts read-visibility now depends
+  // on this being set correctly, not just cosmetic.
+  const acctManagerId = accountId ? state.data.accounts.get(accountId)?.accountManagerId || null : null;
   try{
     await addDoc(collection(db,"contacts"), {
       firstName, lastName, accountId: accountId || null,
       jobTitle: jobTitle || null, email: email || null, phone: phone || null,
-      ownerId, department, createdBy: myUid(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      ownerId, department, accountManagerId: acctManagerId, createdBy: myUid(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
       notes: (!accountId && companyFallback) ? `Company (from Lead): ${companyFallback} — add the rest of this contact's details here.` : null
     });
   }catch(e){ console.warn("auto-seed contact", e); }
@@ -5577,17 +5583,22 @@ function openConvert(leadId){
         });
         accountId = a.id;
       }
+      const acctManagerId = state.data.accounts.get(accountId)?.accountManagerId || null;
       if ($("#c-first").value.trim() || $("#c-last").value.trim()){
         const fn = $("#c-first").value.trim(), ln = $("#c-last").value.trim();
         // If this lead already auto-seeded an orphaned contact (no account
         // yet) with this same name, adopt it onto the new account instead
-        // of creating a second record for the same person.
+        // of creating a second record for the same person — and bring its
+        // visibility in line with that account (manager included), since
+        // it was seeded under the lead's own context originally.
         const norm = s => String(s||"").trim().toLowerCase();
         const orphan = rows("contacts").find(c=> !c.accountId
           && norm(`${c.firstName} ${c.lastName}`) === norm(`${fn} ${ln}`));
-        if (orphan) await updateDoc(doc(db,"contacts",orphan.id), { accountId, updatedAt: serverTimestamp() });
+        if (orphan) await updateDoc(doc(db,"contacts",orphan.id), {
+          accountId, accountManagerId: acctManagerId, department: dept, updatedAt: serverTimestamp()
+        });
         else await addDoc(collection(db,"contacts"), {
-          ...base, firstName:fn, lastName:ln,
+          ...base, firstName:fn, lastName:ln, accountManagerId: acctManagerId,
           accountId, jobTitle:l.jobTitle||null, email:l.email||null, phone:l.phone||null
         });
       }
@@ -6093,9 +6104,11 @@ function openInquiryForm(id, preset){
     const cur = $("#iq-contact").value || d.contactId || "";
     let list;
     if (type === "Account" && relId){
-      // Once a specific customer is chosen, every contact on file for that
-      // customer is fair game — contacts are a shared registry, so this
-      // isn't limited to accounts this person personally owns.
+      // Once a specific customer is chosen, show every contact on file for
+      // that customer that this person can actually see — rows("contacts")
+      // is already scoped server-side (owner/creator, that account's
+      // manager, or a department manager), so this is never the whole
+      // company directory, just this person's slice of it.
       list = rows("contacts").filter(c => c.accountId === relId);
     } else {
       // Nothing specific picked yet (or this is a Lead inquiry, which has
