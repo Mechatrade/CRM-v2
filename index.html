@@ -2814,8 +2814,26 @@ function viewList(col){
   const statusField = S.fields.find(x=>x.k==="status"||x.k==="stage");
   const cols = S.fields.filter(x=>x.table);
 
+  // A real, visible search box on the page itself — not just the shared
+  // one in the header — for the menus where people actually search often.
+  // Scoped to the same state.search the header box drives, so the two
+  // never disagree; matches() (see above) decides what each menu actually
+  // searches by (e.g. Control No. only for inquiries).
+  const pageSearchPH = {
+    leads:"Search leads by name, company, contact…",
+    accounts:"Search customers by company name…",
+    contacts:"Search contacts by name…",
+    inquiries:"Search by Control No.…",
+    costing:"Search costing sheets…",
+    quotations:"Search quotations by number, subject, customer…"
+  }[col];
+
   const filterBar = `
   <div class="toolbar">
+    ${pageSearchPH ? `<span class="search" style="flex:none">
+      <span class="mag">⌕</span>
+      <input type="search" data-page-search value="${esc(state.search||"")}" placeholder="${esc(pageSearchPH)}">
+    </span>` : ""}
     ${statusField?`<select data-filter="status">
       <option value="">All ${esc(statusField.l.toLowerCase())}es</option>
       ${statusField.opts.map(o=>opt(o,f.status)).join("")}
@@ -4582,6 +4600,23 @@ function wireView(){
     const col = el.dataset.col || (state.route==="pipeline" ? "deals" : state.route);
     const f = state.filters[col] = state.filters[col] || {};
     f[el.dataset.filter] = el.value; render();
+  });
+  const pageSearch = v.querySelector("[data-page-search]");
+  if (pageSearch) pageSearch.addEventListener("input", ()=>{
+    state.search = pageSearch.value.toLowerCase();
+    const caret = pageSearch.selectionStart;
+    $("#q").value = pageSearch.value;
+    render();
+    // render() just rebuilt this whole view, including this input itself —
+    // put the cursor back where it was so typing feels continuous instead
+    // of losing focus after every character.
+    const again = document.querySelector("[data-page-search]");
+    if (again){ again.focus(); again.setSelectionRange(caret, caret); }
+  });
+  if (pageSearch) pageSearch.addEventListener("keydown", e=>{
+    if (e.key !== "Enter") return;
+    const term = pageSearch.value.trim();
+    if (term) openGlobalSearch(term);
   });
   v.querySelectorAll("[data-filter-toggle]").forEach(el=> el.onclick = ()=>{
     const f = state.filters[state.route] = state.filters[state.route] || {};
