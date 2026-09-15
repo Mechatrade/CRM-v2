@@ -418,6 +418,7 @@ td .lnk:hover{border-color:var(--accent);color:var(--accent)}
 .cal-ev.warn{background:var(--warn-weak);border-left-color:var(--warn)}
 .cal-ev.info{background:var(--info-weak);border-left-color:var(--info)}
 .cal-ev.done{opacity:.5;text-decoration:line-through}
+.cal-ev.rescheduled{opacity:.6;border-left-style:dashed;font-style:italic}
 .cal-more{font-size:10.5px;color:var(--faint);font-family:var(--mono)}
 @media(max-width:760px){.cal-cell{min-height:64px}.cal-ev{font-size:10px}}
 
@@ -2664,7 +2665,7 @@ function viewGenericDashboard(){
   const wonVal = wonMonth.reduce((s,d)=>s+Number(d.value||0),0);
   const target = Number(state.profile.monthlyTarget||0);
   const workable = rows("leads").filter(l=>["New","Contacted","Engaged"].includes(l.status));
-  const acts = rows("activities").filter(a=>a.status!=="Completed");
+  const acts = rows("activities").filter(a=>a.status!=="Completed" && canWrite(a));
   const overdue = acts.filter(a=>daysUntil(a.dueDate)!==null && daysUntil(a.dueDate)<0);
   const dueSoon = acts.filter(a=>{const n=daysUntil(a.dueDate); return n!==null && n>=0 && n<=7;})
                       .sort((a,b)=>toDate(a.dueDate)-toDate(b.dueDate));
@@ -2963,7 +2964,7 @@ function seriesAudit(){
 function openQuoteCount(){            // declared, so the NAV table can use it
   return rows("quotations").filter(q=>["Draft","Sent","Viewed"].includes(quoteStatus(q))).length;
 }
-function openTasks(){ return rows("activities").filter(a=>a.status!=="Completed" && a.dueDate); }
+function openTasks(){ return rows("activities").filter(a=>a.status!=="Completed" && a.dueDate && canWrite(a)); }
 function isToday(v){ const d=toDate(v); if(!d) return false;
   const n=new Date(); return d.toDateString() === n.toDateString(); }
 
@@ -3171,7 +3172,7 @@ function viewSalesDashboard(){
 /* ------------------------------------------------------------------ */
 function viewTasks(){
   const f = state.filters.tasks || (state.filters.tasks = { tab:"prospective" });
-  const all = rows("activities").filter(a=>matches(a,"activities"));
+  const all = rows("activities").filter(a=>matches(a,"activities") && canWrite(a));
   const openA = all.filter(a=>a.status!=="Completed");
   const buckets = {
     // Every open task in one place, regardless of date — the default,
@@ -3249,7 +3250,16 @@ function viewCalendar(){
   // here too, not just Tasks — title only in the day cell, same as before;
   // clicking it opens that record's own detail view via `_c` (the ternary
   // in data-open already supported this for "content", now just extended).
+  // Tasks (activities) are shared calendar-wide across the department —
+  // canWrite(a) decides whether a given task is "yours" (owned, or you
+  // manage the department) for the visibility rules below; everything else
+  // (quotations, inquiries, costing, follow-ups, content) keeps its
+  // existing visibility, unaffected by this.
   const acts = rows("activities").filter(a=>a.dueDate).map(a=>({...a, _c:"activities"}))
+    // A rescheduled task's very first scheduled slot stays on the calendar
+    // too, as its own status-only marker, separate from the task's new date.
+    .concat(rows("activities").filter(a=>a.originalDueDate)
+      .map(a=>({ ...a, _c:"activities", dueDate:a.originalDueDate, _wasRescheduled:true })))
     .concat(rows("content").filter(c=>c.publishDate)
       .map(c=>({ ...c, _c:"content", dueDate:c.publishDate, subject:c.title, type:"Content" })))
     .concat(rows("inquiries").filter(i=>i.inquiryDate)
@@ -3274,6 +3284,11 @@ function viewCalendar(){
   const today = new Date();
   const isThisMonth = today.getFullYear()===year && today.getMonth()===month;
   const selected = f.day && byDay.get(f.day) ? byDay.get(f.day) : null;
+  // A colleague's task: visible on the shared calendar, but only its type
+  // and status — never the subject, and never openable. "Not tagged
+  // directly to the user" mirrors canWrite()'s own ownership/management
+  // rule, so this always agrees with what they could open anywhere else.
+  const isSharedTask = a => a._c === "activities" && !canWrite(a);
 
   return `
   <div class="toolbar">
@@ -3298,8 +3313,11 @@ function viewCalendar(){
         const isNow = isThisMonth && today.getDate()===d;
         return `<div class="cal-cell${isNow?" now":""}${f.day===d?" sel":""}" data-day="${d}">
           <div class="cal-n">${d}</div>
-          ${items.slice(0,3).map(a=>`<div class="cal-ev ${TYPE_TONE[a.type]||""}${["Completed","Published"].includes(a.status)?" done":""}"
-            title="${esc(a.subject)}">${esc(a.subject)}</div>`).join("")}
+          ${items.slice(0,3).map(a=>{
+            const label = isSharedTask(a) ? `${a.type||"Task"} — ${a.status||"—"}` : a.subject;
+            return `<div class="cal-ev ${TYPE_TONE[a.type]||""}${["Completed","Published"].includes(a.status)?" done":""}${a._wasRescheduled?" rescheduled":""}"
+              title="${esc(label)}${a._wasRescheduled?" (original date — since rescheduled)":""}">${esc(label)}${a._wasRescheduled?" ↷":""}</div>`;
+          }).join("")}
           ${items.length>3?`<div class="cal-more">+${items.length-3} more</div>`:""}
         </div>`;
       }).join("")}
@@ -3309,16 +3327,22 @@ function viewCalendar(){
     <div class="card-h"><h3>${new Date(year,month,f.day).toLocaleDateString(undefined,{weekday:"long", day:"numeric", month:"long"})}</h3>
       <div class="spacer"></div><span class="eyebrow">${selected.length} item${selected.length===1?"":"s"}</span></div>
     <div class="tbl-wrap"><table><tbody>
-      ${selected.map(a=>`<tr>
+      ${selected.map(a=>{
+        const shared = isSharedTask(a);
+        return `<tr>
         <td>${pillFor("type",a.type)}</td>
-        <td><span class="lnk" data-open="${a._c||"activities"}:${a.id}">${esc(a.subject)}</span>
-          <div style="font-size:11.5px;color:var(--muted)">${esc(["quotations","costing"].includes(a._c) ? recordTitle("accounts",a.accountId) : refLabel("dynamic",a.relatedId,a))}</div></td>
+        <td>${shared
+          ? `<span style="color:var(--muted)">${esc(userName(a.ownerId))}'s ${(a.type||"task").toLowerCase()}</span>`
+          : `<span class="lnk" data-open="${a._c||"activities"}:${a.id}">${esc(a.subject)}${a._wasRescheduled?` <span style="color:var(--muted);font-weight:400">— original date, since rescheduled</span>`:""}</span>
+             <div style="font-size:11.5px;color:var(--muted)">${esc(["quotations","costing"].includes(a._c) ? recordTitle("accounts",a.accountId) : refLabel("dynamic",a.relatedId,a))}</div>`}
+        </td>
         ${isManager()?`<td style="font-size:12.5px">${esc(userName(a.ownerId))}</td>`:""}
-        <td class="row-act">${a._c && a._c!=="activities" ? pillFor("status",a.status)
-          : a.status==="Completed" ? `<span class="pill accent">Completed</span>`
-          : `<button class="btn sm" data-donebtn="${a.id}">Done</button>`}</td>
-      </tr>`).join("")}
+        <td class="row-act">${pillFor("status",a.status)}</td>
+      </tr>`;
+      }).join("")}
     </tbody></table></div>
+    ${selected.some(a=>a._c==="activities") ? `<p class="note" style="padding:0 16px 14px;margin:0">
+      Task status can only be changed from the Task list, not here.</p>` : ""}
   </div>` : ""}`;
 }
 
@@ -5230,6 +5254,17 @@ async function submitForm(col,id){
   } else if (col==="deals" && prev && prev.stage !== vals.stage){
     payload.stageChangedAt = serverTimestamp();
     if (["Won","Lost"].includes(vals.stage)) payload.closedAt = serverTimestamp();
+  } else if (col==="activities" && prev && prev.dueDate && vals.dueDate && String(prev.dueDate) !== String(vals.dueDate)){
+    // Rescheduling: the very first scheduled date/time stays on the
+    // calendar even after the task moves — captured once, on the first
+    // reschedule, and never overwritten by any reschedule after that.
+    if (!prev.originalDueDate){
+      payload.originalDueDate = prev.dueDate;
+      payload.originalDueTime = prev.dueTime || null;
+    }
+    if (vals.status === prev.status && prev.status !== "Completed"){
+      payload.status = "Rescheduled";
+    }
   }
   $("#save").disabled = true;
   try{
