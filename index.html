@@ -1152,6 +1152,7 @@ const SCHEMAS = {
       { k:"declinedAt", l:"Declined on", type:"date" },
       { k:"issueDate",  l:"Issued",      type:"date",   table:true },
       { k:"validUntil", l:"Valid until", type:"date",   table:true },
+      { k:"quoteType",  l:"Quote type",  type:"select", opts:["Our Offered Item/s","Direct Quote","Special/Custom Quote"], table:true },
       { k:"total",      l:"Total",       type:"money",  table:true },
       { k:"ownerId",    l:"Owner",       type:"ref",    refTo:"users", table:true, assignOnly:true },
       { k:"terms",      l:"Terms & notes", type:"textarea", full:true }
@@ -1587,6 +1588,24 @@ function fmtDate(d){
   if (isNaN(dt)) return "—";
   return dt.toLocaleDateString(undefined,{ day:"2-digit", month:"short", year:"numeric" });
 }
+/* Date + time, always in Philippine time regardless of the viewer's own
+   timezone — used where the exact moment something was approved matters
+   (e.g. the printable Costing summary), not just the day. */
+function fmtDateTimePH(d){
+  if(!d) return "—";
+  const dt = d?.toDate ? d.toDate() : new Date(d);
+  if (isNaN(dt)) return "—";
+  return dt.toLocaleString("en-PH",{ timeZone:"Asia/Manila",
+    day:"2-digit", month:"short", year:"numeric", hour:"numeric", minute:"2-digit" }) + " PH time";
+}
+/* What kind of pricing a quotation is — shown on the printable document
+   next to Subject, and explained live under the dropdown when picked. */
+const QUOTE_TYPES = ["Our Offered Item/s","Direct Quote","Special/Custom Quote"];
+const QUOTE_TYPE_NOTES = {
+  "Our Offered Item/s": "Standard product offered by our company.",
+  "Direct Quote": "Price/item is quoted directly based on a supplier, manufacturer, or third-party source.",
+  "Special/Custom Quote": "Item is not a standard offering and requires special sourcing or pricing."
+};
 function toDate(v){ if(!v) return null; const d = v?.toDate ? v.toDate() : new Date(v); return isNaN(d)?null:d; }
 const DAY = 86400000;
 function daysSince(v){ const d=toDate(v); return d ? Math.floor((Date.now()-d.getTime())/DAY) : null; }
@@ -2358,7 +2377,7 @@ function approvalHistoryHTML(d){
         <span class="pill ${e.action==="Approved"?"accent":e.action==="Revised"?"warn":"alert"}" style="margin-top:1px">${esc(e.action)}</span>
         <div style="flex:1">
           <div style="font-size:13px">${esc(e.byName)} <span style="color:var(--muted)">— ${esc(e.byRole)}</span></div>
-          <div style="font-size:11.5px;color:var(--muted)">${fmtDate(e.at)}</div>
+          <div style="font-size:11.5px;color:var(--muted)">${fmtDateTimePH(e.at)}</div>
         </div>
       </div>`).join("")}
   </div>`;
@@ -6673,9 +6692,9 @@ function openCostingDetail(id){
         <div class="r"><div class="k">Owner</div><div class="v">${esc(userName(d.ownerId))}</div></div>
         ${Number(d.revision||0) ? `<div class="r"><div class="k">Revisions</div><div class="v">${Number(d.revision)}</div></div>` : ""}
         ${d.status==="Approved" ? `<div class="r"><div class="k">Approved by</div><div class="v">${personCell(d.approvedBy)}
-          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(d.approvedAt)}</div></div></div>` : ""}
+          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDateTimePH(d.approvedAt)}</div></div></div>` : ""}
         ${d.status==="Rejected" ? `<div class="r"><div class="k">Rejected by</div><div class="v">${personCell(d.rejectedBy)}
-          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(d.rejectedAt)}</div></div></div>` : ""}
+          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDateTimePH(d.rejectedAt)}</div></div></div>` : ""}
       </div>
 
       ${(()=>{
@@ -6819,6 +6838,12 @@ function openQuoteForm(id, preset){
           <input id="q-issue" type="date" value="${esc(q.issueDate||today)}"></div>
         <div class="field"><label for="q-valid">Valid until</label>
           <input id="q-valid" type="date" value="${esc(q.validUntil||plus30)}"></div>
+        <div class="field"><label for="q-type">Quote type</label>
+          <select id="q-type"><option value="">—</option>
+            ${QUOTE_TYPES.map(o=>opt(o,q.quoteType||"")).join("")}</select></div>
+        <div class="field full guide-note-wrap" id="q-type-note-wrap" style="display:${q.quoteType?"block":"none"};margin-top:-8px">
+          <div class="hint guide-note" id="q-type-note">${q.quoteType ? esc(QUOTE_TYPE_NOTES[q.quoteType]||"") : ""}</div>
+        </div>
       </div>
 
       <div class="eyebrow" style="margin:20px 0 2px">Line items
@@ -6974,6 +6999,7 @@ function openQuoteForm(id, preset){
       accountId:$("#q-acct").value||null, contactId:$("#q-contact").value||null,
       dealId:$("#q-deal").value||null, status:$("#q-status").value,
       issueDate:$("#q-issue").value||null, validUntil:$("#q-valid").value||null,
+      quoteType:$("#q-type").value||null,
       items:collect().filter(i=>i.desc || i.price),
       discountPct:Number($("#q-disc").value||0)||null,
       taxPct:Number($("#q-tax").value||0)||null,
@@ -6982,6 +7008,11 @@ function openQuoteForm(id, preset){
     };
   }
   $("#q-preview").onclick = ()=> openQuotePreview(draftFromForm());
+  $("#q-type").addEventListener("change", ()=>{
+    const v = $("#q-type").value, note = QUOTE_TYPE_NOTES[v];
+    $("#q-type-note-wrap").style.display = note ? "block" : "none";
+    $("#q-type-note").innerHTML = note ? esc(note) : "";
+  });
 
   const del = document.querySelector("#q-del");
   if (del) del.onclick = async ()=>{
@@ -7015,6 +7046,7 @@ function openQuoteForm(id, preset){
       accountId:$("#q-acct").value||null, contactId:$("#q-contact").value||null,
       dealId:$("#q-deal").value||null, status:$("#q-status").value,
       issueDate:$("#q-issue").value||null, validUntil:$("#q-valid").value||null,
+      quoteType:$("#q-type").value||null,
       items:items2, discountPct:Number($("#q-disc").value||0)||null,
       taxPct:Number($("#q-tax").value||0)||null,
       subtotal:t.sub, total:t.total, terms:$("#q-terms").value||null,
@@ -7111,11 +7143,12 @@ function openQuoteDetail(id){
         <div class="r"><div class="k">Owner</div><div class="v">${esc(userName(q.ownerId))}</div></div>
         <div class="r"><div class="k">Issued</div><div class="v mono" style="font-size:13px">${fmtDate(q.issueDate)}</div></div>
         <div class="r"><div class="k">Valid until</div><div class="v mono" style="font-size:13px">${fmtDate(q.validUntil)}</div></div>
+        ${q.quoteType ? `<div class="r"><div class="k">Quote type</div><div class="v">${esc(q.quoteType)}</div></div>` : ""}
         ${Number(q.revision||0) ? `<div class="r"><div class="k">Revisions</div><div class="v">${Number(q.revision)}</div></div>` : ""}
         ${st==="Approved" ? `<div class="r"><div class="k">Approved by</div><div class="v">${personCell(q.approvedBy)}
-          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(q.approvedAt)}</div></div></div>` : ""}
+          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDateTimePH(q.approvedAt)}</div></div></div>` : ""}
         ${st==="Declined" ? `<div class="r"><div class="k">Declined by</div><div class="v">${personCell(q.declinedBy)}
-          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(q.declinedAt)}</div></div></div>` : ""}
+          <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDateTimePH(q.declinedAt)}</div></div></div>` : ""}
       </div>
       <table class="items" style="margin-top:18px">
         <thead><tr><th>Description</th><th style="text-align:right">Qty</th>
@@ -7348,7 +7381,7 @@ function costingDocHTML(d){
       <div>
         <div class="cap">${reviewLabel}</div>
         <div class="who">${esc(reviewer||"—")}</div>
-        ${reviewDate?`<div>${fmtDate(reviewDate)}</div>`:""}
+        ${reviewDate?`<div>${fmtDateTimePH(reviewDate)}</div>`:""}
       </div>
     </div>
 
@@ -7380,7 +7413,7 @@ function costingDocHTML(d){
       <table class="it" style="margin-top:8px">
         <thead><tr><th>Action</th><th>By</th><th>Date</th></tr></thead>
         <tbody>${d.approvalLog.slice().reverse().map(e=>`<tr>
-          <td>${esc(e.action)}</td><td>${esc(e.byName)} — ${esc(e.byRole)}</td><td>${fmtDate(e.at)}</td>
+          <td>${esc(e.action)}</td><td>${esc(e.byName)} — ${esc(e.byRole)}</td><td>${fmtDateTimePH(e.at)}</td>
         </tr>`).join("")}</tbody>
       </table>
     </div>` : ""}
@@ -7645,9 +7678,15 @@ function quoteDocHTML(q){
       </div>
     </div>
 
-    <div class="subj">
-      <div class="cap">Subject</div>
-      <div class="t">${esc(q.title || "—")}</div>
+    <div class="subj" style="display:flex;justify-content:space-between;align-items:flex-end;gap:24px">
+      <div style="flex:1">
+        <div class="cap">Subject</div>
+        <div class="t">${esc(q.title || "—")}</div>
+      </div>
+      ${q.quoteType ? `<div style="text-align:right;flex:none">
+        <div class="cap">Quote type</div>
+        <div class="t" style="font-size:12px">${esc(q.quoteType)}</div>
+      </div>` : ""}
     </div>
 
     <table class="it">
