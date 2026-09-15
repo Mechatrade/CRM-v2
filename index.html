@@ -6735,6 +6735,7 @@ function openCostingDetail(id){
       ${approvalHistoryHTML(d)}
     </div>
     <div class="modal-f">
+      <button class="btn" id="co-preview-detail" type="button">Preview</button>
       ${d.status==="Approved" && canWrite(d) ? `<button class="btn" id="co-to-quote">Create Quotation</button>` : ""}
       <div class="spacer"></div>
       ${canWrite(d) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
@@ -6745,6 +6746,7 @@ function openCostingDetail(id){
   if (em) em.onclick = ()=>{ closeModal(true); openCostingForm(id); };
   const tq = document.querySelector("#co-to-quote");
   if (tq) tq.onclick = ()=>{ closeModal(true); proceedRecord("costing", id); };
+  $("#co-preview-detail").onclick = ()=> openCostingPreview(d);
 }
 
 function openQuoteForm(id, preset){
@@ -7294,61 +7296,131 @@ function inquiryDocHTML(d){
       ${st.companyPhone?" · "+esc(st.companyPhone):""}</div>
   </div>`;
 }
-/* A quick audit summary for a costing sheet — who worked it out, who
-   approved it, what quotation (if any) it's connected to, and its full
-   approval history. Not a customer-facing printable document like the
-   Inquiry/Quotation previews — this is the internal "what happened to this
-   sheet" view, reachable from inside the edit form without losing your
-   place. */
-function costingSummaryHTML(d){
+/* A printable costing summary — who worked it out, who approved it, what
+   quotation (if any) it's connected to, and its full approval history.
+   Uses the same printable "sheet" document style as the Inquiry/Quotation
+   previews (quoteDocCSS()), so what's shown on screen is exactly what
+   prints — reachable from inside the edit form without losing your place. */
+function costingDocHTML(d){
+  const st = state.settings;
   const f = costingFigures(d);
   const linkedQuote = d.controlNo ? rows("quotations").find(q=>q.controlNo===d.controlNo) : null;
   const siblings = d.controlNo ? rows("costing").filter(c=>c.controlNo===d.controlNo) : [];
-  return `<div class="card" style="max-width:640px;width:100%;padding:20px">
-    <div class="eyebrow" style="margin-bottom:2px">Product costing summary</div>
-    <h3 style="margin:0 0 16px;font-family:var(--display)">${esc(d.controlNo || d.supplierName || "Costing sheet")}</h3>
-    <div class="det">
-      <div class="r"><div class="k">Customer</div><div class="v">${esc(recordTitle("accounts",d.accountId))}</div></div>
-      <div class="r"><div class="k">Supplier</div><div class="v">${esc(d.supplierName||"—")}</div></div>
-      <div class="r"><div class="k">Status</div><div class="v">${pillFor("status",d.status||"Draft")}</div></div>
-      ${Number(d.revision||0) ? `<div class="r"><div class="k">Revisions</div><div class="v">${Number(d.revision)}</div></div>` : ""}
-      <div class="r"><div class="k">Worked out by</div><div class="v">${personCell(d.ownerId)}</div></div>
-      <div class="r"><div class="k">Date created</div><div class="v mono" style="font-size:13px">${fmtDate(d.createdAt)}</div></div>
-      ${d.status==="Approved" ? `<div class="r"><div class="k">Approved by</div><div class="v">${personCell(d.approvedBy)}
-        <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(d.approvedAt)}</div></div></div>` : ""}
-      ${d.status==="Rejected" ? `<div class="r"><div class="k">Rejected by</div><div class="v">${personCell(d.rejectedBy)}
-        <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(d.rejectedAt)}</div></div></div>` : ""}
-      <div class="r"><div class="k">Connected quotation</div><div class="v">${linkedQuote
-        ? `<span class="lnkish" data-open="quotations:${linkedQuote.id}">${esc(linkedQuote.quoteNo)}</span> — ${pillFor("status", linkedQuote.status)}`
-        : `<span style="color:var(--faint)">Not generated yet</span>`}</div></div>
-      ${siblings.length>1 ? `<div class="r"><div class="k">Sibling sheets</div><div class="v">${siblings.length} costing sheets share control no. ${esc(d.controlNo)}</div></div>` : ""}
+  const co = [st.companyAddress, st.companyPhone && "Tel: "+st.companyPhone,
+              st.companyEmail, st.companyWeb, st.companyTin && "TIN: "+st.companyTin]
+             .filter(Boolean).map(esc).join("<br>");
+  const reviewLabel = d.status==="Approved" ? "Approved by" : d.status==="Rejected" ? "Rejected by" : "Reviewed by";
+  const reviewer = d.status==="Approved" ? userName(d.approvedBy) : d.status==="Rejected" ? userName(d.rejectedBy) : "";
+  const reviewDate = d.status==="Approved" ? d.approvedAt : d.status==="Rejected" ? d.rejectedAt : null;
+  return `<div class="sheet">
+    <div class="lh">
+      <div>
+        <img src="${LOGO_PRINT}" alt="${esc(st.companyName||"")}">
+        <div class="co">${co || "&nbsp;"}</div>
+      </div>
+      <div class="dt">
+        <h1>COSTING SUMMARY</h1>
+        <table>
+          <tr><td>Control No.</td><td class="r"><strong>${esc(d.controlNo||"—")}</strong></td></tr>
+          <tr><td>Status</td><td class="r">${esc(d.status||"Draft")}</td></tr>
+          <tr><td>Date created</td><td class="r">${fmtDate(d.createdAt)}</td></tr>
+        </table>
+      </div>
     </div>
-    <div class="totals" style="margin-top:16px">
-      <div class="row"><span>Total cost</span><span>${money(f.cost)}</span></div>
-      <div class="row grand"><span>Customer pays</span><span>${money(f.quoted)}</span></div>
+
+    <div class="parties">
+      <div>
+        <div class="cap">Customer</div>
+        <div class="who">${esc(recordTitle("accounts",d.accountId) || "—")}</div>
+      </div>
+      <div>
+        <div class="cap">Supplier</div>
+        <div class="who">${esc(d.supplierName||"—")}</div>
+        ${d.supplierContact?`<div>${esc(d.supplierContact)}</div>`:""}
+      </div>
     </div>
-    ${approvalHistoryHTML(d)}
+
+    <div class="parties" style="margin-top:20px">
+      <div>
+        <div class="cap">Worked out by</div>
+        <div class="who">${esc(userName(d.ownerId)||"—")}</div>
+      </div>
+      <div>
+        <div class="cap">${reviewLabel}</div>
+        <div class="who">${esc(reviewer||"—")}</div>
+        ${reviewDate?`<div>${fmtDate(reviewDate)}</div>`:""}
+      </div>
+    </div>
+
+    <div class="subj">
+      <div class="cap">Connected quotation</div>
+      <div class="t">${linkedQuote
+        ? `<span class="lnkish" data-open="quotations:${linkedQuote.id}">${esc(linkedQuote.quoteNo)}</span> — ${esc(linkedQuote.status)}`
+        : "Not generated yet"}</div>
+      ${siblings.length>1 ? `<p style="font-size:10.5px;color:#8496A7;margin-top:6px">
+        ${siblings.length} costing sheets share this control number.</p>` : ""}
+    </div>
+
+    <table class="it" style="margin-top:20px">
+      <thead><tr><th>Item</th><th class="r">Unit price</th></tr></thead>
+      <tbody>${(d.items||[]).length ? d.items.map(i=>`<tr>
+        <td>${descDocHTML(i.desc)}</td><td class="r">${money(i.price)}</td>
+      </tr>`).join("") : `<tr><td colspan="2" style="text-align:center;color:#8496A7">No items on this sheet.</td></tr>`}</tbody>
+    </table>
+
+    <div class="tot">
+      <div><span>Total cost</span><span>${money(f.cost)}</span></div>
+      <div class="g"><span>Customer pays</span><span>${money(f.quoted)}</span></div>
+    </div>
+
+    ${d.remarks ? `<div class="blk"><div class="cap">Remarks</div><p>${esc(d.remarks)}</p></div>` : ""}
+
+    ${Array.isArray(d.approvalLog) && d.approvalLog.length ? `<div class="blk">
+      <div class="cap">Approval history — ${Number(d.revision||0)} revision${Number(d.revision||0)===1?"":"s"}</div>
+      <table class="it" style="margin-top:8px">
+        <thead><tr><th>Action</th><th>By</th><th>Date</th></tr></thead>
+        <tbody>${d.approvalLog.slice().reverse().map(e=>`<tr>
+          <td>${esc(e.action)}</td><td>${esc(e.byName)} — ${esc(e.byRole)}</td><td>${fmtDate(e.at)}</td>
+        </tr>`).join("")}</tbody>
+      </table>
+    </div>` : ""}
+
+    <div class="foot">${esc(st.companyName || "")}${st.companyWeb?" · "+esc(st.companyWeb):""}
+      ${st.companyPhone?" · "+esc(st.companyPhone):""}</div>
   </div>`;
 }
 function openCostingPreview(d){
   const wrap = document.createElement("div");
   wrap.className = "scrim preview-scrim";
   wrap.innerHTML = `
+    <style>${quoteDocCSS()}</style>
     <div class="preview-shell">
       <div class="preview-bar">
         <span class="eyebrow">Costing summary</span>
         <div style="flex:1"></div>
+        <button class="btn sm" data-pp>Print</button>
         <button class="btn sm" data-px>Close</button>
       </div>
-      <div class="preview-page">${costingSummaryHTML(d)}</div>
+      <div class="preview-page">${costingDocHTML(d)}</div>
     </div>`;
   document.body.appendChild(wrap);
   const close = ()=> wrap.remove();
   wrap.querySelector("[data-px]").onclick = close;
   wrap.onclick = e=>{ if (e.target === wrap) close(); };
+  wrap.querySelector("[data-pp]").onclick = ()=> printCostingDoc(d);
   wrap.querySelectorAll("[data-open]").forEach(el=> el.onclick = ()=>{
     const [c,cid] = el.dataset.open.split(":"); close(); openDetail(c,cid);
   });
+}
+function printCostingDoc(d){
+  const w = window.open("", "_blank", "width=900,height=1100");
+  if (!w){ toast("Allow pop-ups to print", true); return; }
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>Costing summary — ${esc(d.controlNo||"")}</title><style>
+    body{margin:0;background:#fff}${quoteDocCSS()}</style></head>
+    <body>${costingDocHTML(d)}</body></html>`);
+  w.document.close();
+  setTimeout(()=>{ w.focus(); w.print(); }, 500);
 }
 function openInquiryPreview(d){
   const wrap = document.createElement("div");
