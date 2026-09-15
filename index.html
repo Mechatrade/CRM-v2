@@ -1310,7 +1310,7 @@ const SCHEMAS = {
       { k:"totalCost",     l:"Total cost (₱)",   type:"money",  table:true },
       { k:"markupPct",     l:"Markup % (equiv.)",type:"number" },
       { k:"sellingPrice",  l:"Selling price (₱)",type:"money" },
-      { k:"quotedPrice",   l:"Customer pays (₱)",type:"money",  table:true },
+      { k:"quotedPrice",   l:"Selling Price (₱)",type:"money",  table:true },
       { k:"status",        l:"Status",            type:"select", opts:["Draft","Submitted for Approval","Approved","Rejected"], def:"Draft", table:true },
       { k:"revision",      l:"Revisions",         type:"number", table:true },
       { k:"approvedBy",    l:"Approved by",       type:"ref",    refTo:"users" },
@@ -2813,7 +2813,11 @@ function viewList(col){
   });
 
   const statusField = S.fields.find(x=>x.k==="status"||x.k==="stage");
-  const cols = S.fields.filter(x=>x.table);
+  // GP%/Total cost reveal margin — admin-only everywhere else in Costing
+  // (form, detail, print), so they're admin-only here too; otherwise the
+  // list table would give away exactly what those restrictions are for.
+  const hiddenCols = (col==="costing" && !isAdmin()) ? ["gpPct","totalCost"] : [];
+  const cols = S.fields.filter(x=>x.table && !hiddenCols.includes(x.k));
 
   // A real, visible search box on the page itself — not just the shared
   // one in the header — for the menus where people actually search often.
@@ -6559,7 +6563,8 @@ function openCostingForm(id, preset){
         <thead><tr>
           <th>Item</th><th>Qty</th><th id="co-th-unit">Unit price</th>
           <th style="text-align:right" id="co-th-fx">Amount</th>
-          <th style="text-align:right" class="intl-only" id="co-th-php">Amount (₱)</th><th></th>
+          <th style="text-align:right" class="intl-only" id="co-th-php">Amount (₱)</th>
+          <th style="text-align:right">Selling Price</th><th></th>
         </tr></thead>
         <tbody id="co-items">${items.map(i=>coItemRow(i)).join("")}</tbody>
       </table>
@@ -6596,21 +6601,26 @@ function openCostingForm(id, preset){
           <div class="fgrid">
             <div class="field"><label for="co-gp">GP %</label>
               <input id="co-gp" type="number" min="0" max="99" step="any" value="${esc(d.gpPct??30)}"></div>
-            <div class="field"><label>Mark-up % <span class="lockmark">auto</span></label>
-              <input id="co-markup" class="locked" readonly></div>
-          </div>
-          <div class="fgrid" style="margin-top:13px">
             <div class="field"><label for="co-cont">Contingency %</label>
               <input id="co-cont" type="number" min="0" step="any" value="${esc(d.contingencyPct??0)}"></div>
-            <div class="field"><label>Selling price <span class="lockmark">auto</span></label>
-              <input id="co-sell" class="locked" readonly></div>
           </div>
-          <p class="note">Type the <strong>GP %</strong> you need — the share of the selling price you
-            keep. Mark-up is the same profit expressed against cost, worked out for you.</p>
+          ${isAdmin() ? `<div class="fgrid" style="margin-top:13px">
+            <div class="field"><label>Mark-up % <span class="lockmark">auto</span></label>
+              <input id="co-markup" class="locked" readonly></div>
+            <div class="field"><label>Total Amount <span class="lockmark">auto</span></label>
+              <input id="co-sell" class="locked" readonly></div>
+          </div>` : ""}
+          <p class="note">Type the <strong>GP %</strong> you need — the share of the selling price you keep.${
+            isAdmin() ? " Mark-up is the same profit expressed against cost, worked out for you." : ""}</p>
         </div>
         <div>
-          <div class="eyebrow" style="margin-bottom:9px">Cost breakdown</div>
-          <div class="totals" id="co-totals"></div>
+          ${isAdmin() ? `<div class="eyebrow" style="margin-bottom:9px">Cost breakdown</div>
+            <div class="totals" id="co-totals"></div>` : `
+            <div class="eyebrow" style="margin-bottom:9px">Selling Price</div>
+            <div class="card" style="padding:20px;text-align:center;border-color:var(--accent)">
+              <div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Selling Price</div>
+              <div style="font-size:28px;font-weight:700;color:var(--accent);margin-top:8px;font-family:var(--mono)" id="co-sp-highlight">₱0</div>
+            </div>`}
         </div>
       </div>
 
@@ -6624,6 +6634,7 @@ function openCostingForm(id, preset){
       <button class="btn" data-close>Cancel</button>
       <button class="btn pri" id="co-save">${id?"Save costing sheet":"Create costing sheet"}</button>
     </div>`, true);
+  document.querySelector(".modal").classList.add("xxwide");
 
   function isIntl(){ return $("#co-type").value === "International"; }
   function curOf(){ return isIntl() ? $("#co-cur").value : "PHP"; }
@@ -6704,11 +6715,22 @@ function openCostingForm(id, preset){
     $("#co-rate-hint").textContent = isAdmin()
       ? `1 ${curOf()} = ₱${(Number($("#co-rate").value)||0).toLocaleString()}. Update to today's rate.`
       : "Only an administrator can change this.";
+    const baseAmounts = items.map(l=> Number(l.qty||0)*Number(l.price||0));
+    const totalBase = baseAmounts.reduce((s,a)=>s+a,0);
     document.querySelectorAll("#co-items tr[data-id]").forEach(tr=>{
       const line = items.find(x=>x._id === Number(tr.dataset.id));
+      const i = items.indexOf(line);
       const fxOut = tr.querySelector('[data-out="fx"]'), phpOut = tr.querySelector('[data-out="php"]');
+      const spOut = tr.querySelector('[data-out="sp"]');
       if (fxOut)  fxOut.textContent  = csFx(Number(line.qty||0)*Number(line.price||0), sym);
       if (phpOut) phpOut.textContent = csPeso(Number(line.qty||0)*Number(line.price||0)*rateOf());
+      if (spOut){
+        // Same proportional split used when this sheet hands off to a
+        // Quotation (costingItemQuotes) — each item's share of the final
+        // selling price, matched to its share of the base cost.
+        const share = totalBase > 0 ? baseAmounts[i]/totalBase : 1/items.length;
+        spOut.textContent = csPeso(f.quoted * share);
+      }
     });
     const conv = (id, phpVal, hint) => {
       const box = $(id); if (!box) return;
@@ -6727,10 +6749,14 @@ function openCostingForm(id, preset){
     } else {
       $("#co-conv-tele").textContent = "";
     }
-    $("#co-markup").value = f.markup.toFixed(2);
-    $("#co-sell").value   = csPeso(f.sell);
+    // Mark-up %, Total Amount, and the full Cost breakdown are admin-only —
+    // these elements simply don't exist in the DOM for anyone else, so
+    // every reference here is guarded.
+    const markupEl = $("#co-markup"); if (markupEl) markupEl.value = f.markup.toFixed(2);
+    const sellEl = $("#co-sell"); if (sellEl) sellEl.value = csPeso(f.sell);
     const both = (fxv,phpv) => isIntl() ? `${csFx(fxv,sym)} · ${csPeso(phpv)}` : csPeso(phpv);
-    $("#co-totals").innerHTML = `
+    const totalsEl = $("#co-totals");
+    if (totalsEl) totalsEl.innerHTML = `
       <div class="row"><span>Purchase cost</span><span>${both(f.goodsFx, f.goodsPhp)}</span></div>
       ${isIntl()?`<div class="row"><span>Telegraphic charges</span><span>${both(f.teleFx, f.tele)}</span></div>`:""}
       <div class="row"><span>Shipping fee</span><span>${both(f.shipFx, f.ship)}</span></div>
@@ -6739,10 +6765,12 @@ function openCostingForm(id, preset){
       ${isIntl()?`<div class="row"><span>Delivery fee</span><span>${csPeso(f.deliv)}</span></div>`:""}
       ${f.otherTotal?`<div class="row"><span>Other allowances</span><span>${csPeso(f.otherTotal)}</span></div>`:""}
       <div class="row grand"><span>Total cost</span><span>${csPeso(f.cost)}</span></div>
-      <div class="row" style="margin-top:9px"><span>Selling price</span>
-        <span style="color:var(--accent);font-weight:600">${csPeso(f.sell)}</span></div>
+      <div class="row" style="margin-top:9px"><span>Total Amount</span>
+        <span style="font-weight:600">${csPeso(f.sell)}</span></div>
       <div class="row"><span>Contingency ${Number($("#co-cont").value||0)}%</span><span>${csPeso(f.contingency)}</span></div>
-      <div class="row grand"><span>Customer pays</span><span>${csPeso(f.quoted)}</span></div>`;
+      <div class="row grand" style="color:var(--accent)"><span>Selling Price</span><span>${csPeso(f.quoted)}</span></div>`;
+    // Non-admin: the highlighted Selling Price card instead of the breakdown.
+    const spHi = $("#co-sp-highlight"); if (spHi) spHi.textContent = csPeso(f.quoted);
   }
 
   $("#co-add").onclick = ()=>{ items.push({ _id: nextLineId++, desc:"", qty:1, price:"" }); drawItems(); recalc(); };
@@ -6851,6 +6879,7 @@ function coItemRow(l){
     <td style="width:112px"><input data-f="price" type="number" min="0" step="any" value="${esc(l.price??"")}" placeholder="0.00"></td>
     <td style="width:112px;text-align:right;font-family:var(--mono);font-size:12.5px" data-out="fx"></td>
     <td class="intl-only" style="width:120px;text-align:right;font-family:var(--mono);font-size:12.5px" data-out="php"></td>
+    <td style="width:120px;text-align:right;font-family:var(--mono);font-size:12.5px;font-weight:600;color:var(--accent)" data-out="sp"></td>
     <td style="width:26px"><button class="x" data-del-line="${l._id}" title="Remove">×</button></td>
   </tr>`;
 }
@@ -6899,13 +6928,22 @@ function openCostingDetail(id){
 
       <table class="items" style="margin-top:18px">
         <thead><tr><th>Item</th><th style="text-align:right">Qty</th>
-          <th style="text-align:right">Unit price</th><th style="text-align:right">Amount</th></tr></thead>
-        <tbody>${(d.items||[]).map(i=>`<tr>
+          <th style="text-align:right">Unit price</th><th style="text-align:right">Amount</th>
+          <th style="text-align:right">Selling Price</th></tr></thead>
+        <tbody>${(()=>{
+          const baseAmounts = (d.items||[]).map(i=> Number(i.qty||0)*Number(i.price||0));
+          const totalBase = baseAmounts.reduce((s,a)=>s+a,0);
+          return (d.items||[]).map((i,idx)=>{
+            const share = totalBase>0 ? baseAmounts[idx]/totalBase : 1/((d.items||[]).length||1);
+            return `<tr>
           <td style="padding:7px 6px">${esc(i.desc||"—")}</td>
           <td class="num" style="padding:7px 6px">${i.qty}</td>
           <td class="num" style="padding:7px 6px">${csFx(i.price)}</td>
           <td class="num" style="padding:7px 6px">${csFx(Number(i.qty||0)*Number(i.price||0))}</td>
-        </tr>`).join("")}</tbody>
+          <td class="num" style="padding:7px 6px;font-weight:600;color:var(--accent)">${csPeso(f.quoted*share)}</td>
+        </tr>`;
+          }).join("");
+        })()}</tbody>
       </table>
 
       ${(d.otherAllowances||[]).length ? `<table class="items" style="margin-top:10px">
@@ -6916,7 +6954,7 @@ function openCostingDetail(id){
         </tr>`).join("")}</tbody>
       </table>` : ""}
 
-      <div class="totals" style="margin-top:14px">
+      ${isAdmin() ? `<div class="totals" style="margin-top:14px">
         <div class="row"><span>Purchase cost</span><span>${both(f.goodsFx, f.goodsPhp)}</span></div>
         ${f.intl?`<div class="row"><span>Telegraphic charges</span><span>${both(f.teleFx, f.tele)}</span></div>`:""}
         <div class="row"><span>Shipping fee</span><span>${both(f.shipFx, f.ship)}</span></div>
@@ -6925,18 +6963,20 @@ function openCostingDetail(id){
         ${f.intl?`<div class="row"><span>Delivery fee</span><span>${csPeso(f.deliv)}</span></div>`:""}
         ${f.otherTotal?`<div class="row"><span>Other allowances</span><span>${csPeso(f.otherTotal)}</span></div>`:""}
         <div class="row grand"><span>Total cost</span><span>${csPeso(f.cost)}</span></div>
-        <div class="row" style="margin-top:9px"><span>Selling price</span>
-          <span style="color:var(--accent);font-weight:600">${csPeso(f.sell)}</span></div>
+        <div class="row" style="margin-top:9px"><span>Total Amount</span>
+          <span style="font-weight:600">${csPeso(f.sell)}</span></div>
         <div class="row"><span>Contingency ${d.contingencyPct||0}%</span><span>${csPeso(f.contingency)}</span></div>
-        <div class="row grand"><span>Customer pays</span><span>${csPeso(f.quoted)}</span></div>
+        <div class="row grand" style="color:var(--accent)"><span>Selling Price</span><span>${csPeso(f.quoted)}</span></div>
       </div>
-
       <div class="kpis" style="margin-top:16px">
         <div class="kpi"><div class="lbl">Total cost</div><div class="val">${csPeso(f.cost)}</div></div>
         <div class="kpi ${healthy?"accent":thin?"warn":"bad"}"><div class="lbl">GP</div>
           <div class="val">${f.gp.toFixed(1)}%</div><div class="foot">same as a ${f.markup.toFixed(1)}% mark-up</div></div>
         <div class="kpi ${f.profit>0?"":"bad"}"><div class="lbl">Gross profit</div><div class="val">${csPeso(f.profit)}</div></div>
-      </div>
+      </div>` : `<div class="card" style="padding:20px;text-align:center;border-color:var(--accent);margin-top:14px">
+        <div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em">Selling Price</div>
+        <div style="font-size:28px;font-weight:700;color:var(--accent);margin-top:8px;font-family:var(--mono)">${csPeso(f.quoted)}</div>
+      </div>`}
       ${d.remarks ? `<div style="margin-top:16px"><div class="eyebrow">Remarks</div>
         <p style="font-size:13px;white-space:pre-wrap;margin:5px 0 0">${esc(d.remarks)}</p></div>` : ""}
       ${approvalHistoryHTML(d)}
@@ -7586,15 +7626,23 @@ function costingDocHTML(d){
     </div>
 
     <table class="it" style="margin-top:20px">
-      <thead><tr><th>Item</th><th class="r">Unit price</th></tr></thead>
-      <tbody>${(d.items||[]).length ? d.items.map(i=>`<tr>
+      <thead><tr><th>Item</th><th class="r">Unit price</th><th class="r">Selling Price</th></tr></thead>
+      <tbody>${(d.items||[]).length ? (()=>{
+        const baseAmounts = d.items.map(i=>Number(i.qty||0)*Number(i.price||0));
+        const totalBase = baseAmounts.reduce((s,a)=>s+a,0);
+        return d.items.map((i,idx)=>{
+          const share = totalBase>0 ? baseAmounts[idx]/totalBase : 1/d.items.length;
+          return `<tr>
         <td>${descDocHTML(i.desc)}</td><td class="r">${money(i.price)}</td>
-      </tr>`).join("") : `<tr><td colspan="2" style="text-align:center;color:#8496A7">No items on this sheet.</td></tr>`}</tbody>
+        <td class="r" style="font-weight:700;color:#E8621A">${money(f.quoted*share)}</td>
+      </tr>`;
+        }).join("");
+      })() : `<tr><td colspan="3" style="text-align:center;color:#8496A7">No items on this sheet.</td></tr>`}</tbody>
     </table>
 
     <div class="tot">
-      <div><span>Total cost</span><span>${money(f.cost)}</span></div>
-      <div class="g"><span>Customer pays</span><span>${money(f.quoted)}</span></div>
+      ${isAdmin() ? `<div><span>Total cost</span><span>${money(f.cost)}</span></div>` : ""}
+      <div class="g"><span>Selling Price</span><span>${money(f.quoted)}</span></div>
     </div>
 
     ${d.remarks ? `<div class="blk"><div class="cap">Remarks</div><p>${esc(d.remarks)}</p></div>` : ""}
