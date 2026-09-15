@@ -1138,14 +1138,15 @@ const SCHEMAS = {
     label:"Quotation", plural:"Quotations", icon:"❑", titleField:"quoteNo",
     fields:[
       { k:"quoteNo",    l:"Quote no.",   type:"text",   req:true, table:true },
+      { k:"revision",   l:"Quote Rev.",  type:"number", table:true },
       { k:"controlNo",  l:"Control No.", type:"text",   table:true },
+      { k:"costingRevision", l:"Costing Rev.", type:"number", table:true },
       { k:"title",      l:"Subject",     type:"text",   req:true, table:true },
       { k:"accountId",  l:"Customer",    type:"ref",    refTo:"accounts", table:true },
       { k:"dealId",     l:"Opportunity", type:"ref",    refTo:"deals" },
       { k:"contactId",  l:"Attention to",type:"ref",    refTo:"contacts" },
       { k:"costingId",  l:"From costing", type:"ref",   refTo:"costing" },
       { k:"status",     l:"Status",      type:"select", opts:["Draft","Sent","Viewed","Approved","Declined","Expired"], def:"Draft", table:true },
-      { k:"revision",   l:"Revisions",   type:"number", table:true },
       { k:"approvedBy", l:"Approved by", type:"ref",    refTo:"users" },
       { k:"approvedAt", l:"Approved on", type:"date" },
       { k:"declinedBy", l:"Declined by", type:"ref",    refTo:"users" },
@@ -2369,12 +2370,14 @@ function personCell(uid){
 function approvalHistoryHTML(d){
   if (!Array.isArray(d.approvalLog) || !d.approvalLog.length) return "";
   const n = Number(d.revision||0);
+  const cn = Number(d.costingRevision||0);
   return `<div style="margin-top:20px">
     <div class="card-h" style="padding:0"><h3>Approval history</h3><div class="spacer"></div>
-      ${n ? `<span class="eyebrow">${n} revision${n===1?"":"s"}</span>` : ""}</div>
+      ${n ? `<span class="eyebrow">${n} revision${n===1?"":"s"}</span>` : ""}
+      ${cn ? `<span class="eyebrow" style="margin-left:10px">${cn} costing update${cn===1?"":"s"}</span>` : ""}</div>
     ${d.approvalLog.slice().reverse().map(e=>`
       <div style="display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line-2)">
-        <span class="pill ${e.action==="Approved"?"accent":e.action==="Revised"?"warn":"alert"}" style="margin-top:1px">${esc(e.action)}</span>
+        <span class="pill ${e.action==="Approved"?"accent":e.action==="Revised"?"warn":e.action==="Costing Updated"?"info":"alert"}" style="margin-top:1px">${esc(e.action)}</span>
         <div style="flex:1">
           <div style="font-size:13px">${esc(e.byName)} <span style="color:var(--muted)">— ${esc(e.byRole)}</span></div>
           <div style="font-size:11.5px;color:var(--muted)">${fmtDateTimePH(e.at)}</div>
@@ -4652,7 +4655,7 @@ async function recordApprovalEvent(col, id, action){
   const patch = { approvalLog: log, updatedAt: serverTimestamp() };
   const rejecting = action === "Rejected" || action === "Declined";
   if (rejecting){
-    patch.revision = Number(rec.revision||0) + 1;
+    if (action === "Rejected") patch.revision = Number(rec.revision||0) + 1;  // costing only — quotation's Quote Rev. is edit-driven, not decline-driven
     patch[action === "Rejected" ? "rejectedBy" : "declinedBy"] = myUid();
     patch[action === "Rejected" ? "rejectedAt" : "declinedAt"] = serverTimestamp();
   } else if (action === "Approved"){
@@ -4686,7 +4689,7 @@ async function syncQuotationFromCosting(costingId){
   const t = quoteTotals(items, q.discountPct||0, q.taxPct||0);
   const me = state.users.get(myUid());
   const entry = {
-    action: "Revised", by: myUid(),
+    action: "Costing Updated", by: myUid(),
     byName: me?.displayName || state.profile?.displayName || "—",
     byRole: ROLES[me?.role]?.label || me?.role || "—",
     at: new Date().toISOString()
@@ -4694,7 +4697,7 @@ async function syncQuotationFromCosting(costingId){
   try{
     await updateDoc(doc(db,"quotations",q.id), {
       items, subtotal: t.sub, total: t.total,
-      revision: Number(q.revision||0) + 1,
+      costingRevision: Number(q.costingRevision||0) + 1,
       approvalLog: Array.isArray(q.approvalLog) ? [...q.approvalLog, entry] : [entry],
       updatedAt: serverTimestamp()
     });
@@ -7004,7 +7007,8 @@ function openQuoteForm(id, preset){
       discountPct:Number($("#q-disc").value||0)||null,
       taxPct:Number($("#q-tax").value||0)||null,
       terms:$("#q-terms").value||null,
-      ownerId: isManager() ? ($("#q-owner").value || myUid()) : (q.ownerId || myUid())
+      ownerId: isManager() ? ($("#q-owner").value || myUid()) : (q.ownerId || myUid()),
+      revision: q.revision || 0
     };
   }
   $("#q-preview").onclick = ()=> openQuotePreview(draftFromForm());
@@ -7056,6 +7060,7 @@ function openQuoteForm(id, preset){
       costingId: q.costingId || null,
       updatedAt: serverTimestamp()
     };
+    if (id) payload.revision = Number(q.revision||0) + 1;  // Quote Rev. counts edits, not status changes
     $("#q-save").disabled = true;
     try{
       if (id){
@@ -7144,7 +7149,8 @@ function openQuoteDetail(id){
         <div class="r"><div class="k">Issued</div><div class="v mono" style="font-size:13px">${fmtDate(q.issueDate)}</div></div>
         <div class="r"><div class="k">Valid until</div><div class="v mono" style="font-size:13px">${fmtDate(q.validUntil)}</div></div>
         ${q.quoteType ? `<div class="r"><div class="k">Quote type</div><div class="v">${esc(q.quoteType)}</div></div>` : ""}
-        ${Number(q.revision||0) ? `<div class="r"><div class="k">Revisions</div><div class="v">${Number(q.revision)}</div></div>` : ""}
+        ${Number(q.revision||0) ? `<div class="r"><div class="k">Quote revisions</div><div class="v">${Number(q.revision)}</div></div>` : ""}
+        ${Number(q.costingRevision||0) ? `<div class="r"><div class="k">Costing revisions</div><div class="v">${Number(q.costingRevision)} — updated from the linked costing sheet</div></div>` : ""}
         ${st==="Approved" ? `<div class="r"><div class="k">Approved by</div><div class="v">${personCell(q.approvedBy)}
           <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDateTimePH(q.approvedAt)}</div></div></div>` : ""}
         ${st==="Declined" ? `<div class="r"><div class="k">Declined by</div><div class="v">${personCell(q.declinedBy)}
@@ -7656,6 +7662,7 @@ function quoteDocHTML(q){
           <tr><td>Quote no.</td><td class="r"><strong>${esc(q.quoteNo||"—")}</strong></td></tr>
           <tr><td>Date issued</td><td class="r">${fmtDate(q.issueDate)}</td></tr>
           <tr><td>Valid until</td><td class="r">${fmtDate(q.validUntil)}</td></tr>
+          <tr><td>Rev. no.</td><td class="r">${Number(q.revision||0)}</td></tr>
         </table>
       </div>
     </div>
