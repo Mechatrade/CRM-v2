@@ -1438,6 +1438,10 @@ function telegraphicBracket(quotedTotal){
   if (n <= 5000) return 70;
   return 85;
 }
+// A costing sheet quoted below this GP% needs extra approval attention —
+// flagged live on the form, and surfaced to admins as a notification on
+// the Product Costing list.
+const GP_APPROVAL_THRESHOLD = 35;
 /* Inquiry canvass sheet: each supplier is tagged Local or International.
    International suppliers get an "Origin" country, which suggests a
    default currency (still editable) — same currency list Product Costing
@@ -2833,7 +2837,21 @@ function viewList(col){
     quotations:"Search quotations by number, subject, customer…"
   }[col];
 
+  const lowGpPending = (col==="costing" && isAdmin())
+    ? rows("costing").filter(c=>c.status==="Submitted for Approval" && Number(c.gpPct||0) < GP_APPROVAL_THRESHOLD)
+    : [];
+  const lowGpBanner = lowGpPending.length ? `
+  <div class="card" style="padding:12px 16px;margin-bottom:14px;border-color:var(--warn);background:var(--warn-weak)">
+    <strong style="color:var(--warn)">⚠ ${lowGpPending.length} costing sheet${lowGpPending.length===1?"":"s"} pending approval
+      ${lowGpPending.length===1?"has":"have"} GP% below ${GP_APPROVAL_THRESHOLD}%</strong>
+    <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:10px">
+      ${lowGpPending.map(c=>`<span class="lnkish" data-open="costing:${c.id}" style="font-size:12.5px">
+        ${esc(c.controlNo||c.supplierName||"Sheet")} — ${Number(c.gpPct||0)}% GP</span>`).join("")}
+    </div>
+  </div>` : "";
+
   const filterBar = `
+  ${lowGpBanner}
   <div class="toolbar">
     ${pageSearchPH ? `<span class="search" style="flex:none">
       <span class="mag">⌕</span>
@@ -6572,10 +6590,11 @@ function openCostingForm(id, preset){
 
       <div class="eyebrow" style="margin:20px 0 2px">Costs on top</div>
       <div class="fgrid">
-        <div class="field intl-only"><label for="co-tele">Telegraphic charges</label>
-          <input id="co-tele" type="number" min="0" step="any" value="${esc(d.telegraphicCharge??"")}"${isAdmin()?"":" readonly"}>
+        ${isAdmin() ? `<div class="field intl-only"><label for="co-tele">Telegraphic charges</label>
+          <input id="co-tele" type="number" min="0" step="any" value="${esc(d.telegraphicCharge??"")}">
           <span class="hint" id="co-conv-tele"></span>
-          ${isAdmin()?`<button class="btn sm" id="co-tele-reset" type="button" style="margin-top:6px">↺ Use bracket value</button>`:""}</div>
+          <button class="btn sm" id="co-tele-reset" type="button" style="margin-top:6px">↺ Use bracket value</button></div>`
+          : `<input type="hidden" id="co-tele" value="${esc(d.telegraphicCharge??"")}">`}
         <div class="field"><label for="co-ship">Shipping cost</label>
           <input id="co-ship" type="number" min="0" step="any" value="${esc(d.shippingCost??"")}">
           <span class="hint" id="co-conv-ship"></span></div>
@@ -6600,9 +6619,11 @@ function openCostingForm(id, preset){
         <div>
           <div class="fgrid">
             <div class="field"><label for="co-gp">GP %</label>
-              <input id="co-gp" type="number" min="0" max="99" step="any" value="${esc(d.gpPct??30)}"></div>
-            <div class="field"><label for="co-cont">Contingency %</label>
-              <input id="co-cont" type="number" min="0" step="any" value="${esc(d.contingencyPct??0)}"></div>
+              <input id="co-gp" type="number" min="0" max="99" step="any" value="${esc(d.gpPct??30)}">
+              <span class="hint" id="co-gp-hint"></span></div>
+            ${isAdmin() ? `<div class="field"><label for="co-cont">Contingency %</label>
+              <input id="co-cont" type="number" min="0" step="any" value="${esc(d.contingencyPct??12)}"></div>`
+              : `<input type="hidden" id="co-cont" value="${esc(d.contingencyPct??12)}">`}
           </div>
           ${isAdmin() ? `<div class="fgrid" style="margin-top:13px">
             <div class="field"><label>Mark-up % <span class="lockmark">auto</span></label>
@@ -6715,6 +6736,13 @@ function openCostingForm(id, preset){
     $("#co-rate-hint").textContent = isAdmin()
       ? `1 ${curOf()} = ₱${(Number($("#co-rate").value)||0).toLocaleString()}. Update to today's rate.`
       : "Only an administrator can change this.";
+    const gpHint = $("#co-gp-hint");
+    if (gpHint){
+      const gpVal = Number($("#co-gp").value||0);
+      gpHint.innerHTML = gpVal < GP_APPROVAL_THRESHOLD
+        ? `<span style="color:var(--warn)">Below ${GP_APPROVAL_THRESHOLD}% — this costing sheet will need extra approval attention.</span>`
+        : `<span style="color:var(--muted)">${GP_APPROVAL_THRESHOLD}% or above — standard approval.</span>`;
+    }
     const baseAmounts = items.map(l=> Number(l.qty||0)*Number(l.price||0));
     const totalBase = baseAmounts.reduce((s,a)=>s+a,0);
     document.querySelectorAll("#co-items tr[data-id]").forEach(tr=>{
@@ -6741,13 +6769,15 @@ function openCostingForm(id, preset){
     if (isIntl()){
       const goodsNow = items.reduce((s,l)=> s + Number(l.qty||0)*Number(l.price||0), 0);
       const bracket = telegraphicBracket(goodsNow);
-      $("#co-conv-tele").textContent = teleManuallySet
+      const teleNote = $("#co-conv-tele");
+      if (teleNote) teleNote.textContent = teleManuallySet
         ? `= ${csPeso(f.tele)} · Manually set (bracket would be ${curOf()} ${bracket})${isAdmin()?"":" — only an administrator can change this"}`
         : `= ${csPeso(f.tele)} · Bracket: ${curOf()} 0–4,000 → 50, 4,000–5,000 → 70, over 5,000 → 85`;
       const resetBtn = $("#co-tele-reset");
       if (resetBtn) resetBtn.style.display = teleManuallySet ? "" : "none";
     } else {
-      $("#co-conv-tele").textContent = "";
+      const teleNote = $("#co-conv-tele");
+      if (teleNote) teleNote.textContent = "";
     }
     // Mark-up %, Total Amount, and the full Cost breakdown are admin-only —
     // these elements simply don't exist in the DOM for anyone else, so
@@ -7233,7 +7263,9 @@ function openQuoteForm(id, preset){
       taxPct:Number($("#q-tax").value||0)||null,
       terms:$("#q-terms").value||null,
       ownerId: isManager() ? ($("#q-owner").value || myUid()) : (q.ownerId || myUid()),
-      revision: q.revision || 0
+      revision: q.revision || 0,
+      previousVersions: q.previousVersions || [],
+      controlNo: q.controlNo || null
     };
   }
   $("#q-preview").onclick = ()=> openQuotePreview(draftFromForm());
@@ -7285,7 +7317,19 @@ function openQuoteForm(id, preset){
       costingId: q.costingId || null,
       updatedAt: serverTimestamp()
     };
-    if (id) payload.revision = Number(q.revision||0) + 1;  // Quote Rev. counts edits, not status changes
+    if (id){
+      // Keep what this quotation looked like before this edit — Preview
+      // can still show any past revision, not just the current one.
+      const snapshot = {
+        revision: Number(q.revision||0),
+        title: q.title||null, items: q.items||[], subtotal: q.subtotal||0, total: q.total||0,
+        discountPct: q.discountPct||null, taxPct: q.taxPct||null, terms: q.terms||null,
+        issueDate: q.issueDate||null, validUntil: q.validUntil||null, quoteType: q.quoteType||null,
+        savedAt: new Date().toISOString()
+      };
+      payload.previousVersions = Array.isArray(q.previousVersions) ? [...q.previousVersions, snapshot] : [snapshot];
+      payload.revision = Number(q.revision||0) + 1;  // Quote Rev. counts edits, not status changes
+    }
     $("#q-save").disabled = true;
     try{
       if (id){
@@ -7976,6 +8020,25 @@ function quoteDocHTML(q){
 /* Preview sits above the form on its own layer, so closing it returns you
    to exactly where you were. */
 function openQuotePreview(q){
+  const versions = Array.isArray(q.previousVersions) ? q.previousVersions : [];
+  const currentRev = Number(q.revision||0);
+  // Merge the current record with a specific past version's snapshot
+  // fields, so quoteDocHTML() renders exactly how that revision looked —
+  // everything that isn't "content" (quote no., customer, status, owner…)
+  // still comes from the current record, since those aren't versioned.
+  const withVersion = rev => {
+    if (rev === currentRev) return q;
+    const snap = versions.find(v=>v.revision===rev);
+    return snap ? { ...q, ...snap } : q;
+  };
+  const pageHTML = rev => {
+    const isPast = rev !== currentRev;
+    const banner = isPast ? `<div style="max-width:800px;margin:0 auto 12px;padding:10px 14px;
+      background:#FFF3E0;border:1px solid #F5C177;border-radius:6px;color:#8A5A00;
+      font-size:13px;text-align:center">Viewing Revision ${rev} — not the current version.</div>` : "";
+    return banner + quoteDocHTML(withVersion(rev));
+  };
+  let selectedRev = currentRev;
   const wrap = document.createElement("div");
   wrap.className = "scrim preview-scrim";
   wrap.innerHTML = `
@@ -7983,17 +8046,27 @@ function openQuotePreview(q){
     <div class="preview-shell">
       <div class="preview-bar">
         <span class="eyebrow">Quotation preview</span>
+        ${versions.length ? `<select id="qp-rev-select" style="margin-left:10px">
+          <option value="${currentRev}">Current (Rev ${currentRev})</option>
+          ${versions.slice().reverse().map(v=>
+            `<option value="${v.revision}">Rev ${v.revision}${v.revision===0?" (original)":""}</option>`).join("")}
+        </select>` : ""}
         <div style="flex:1"></div>
         <button class="btn sm" data-pp>Print</button>
         <button class="btn sm" data-px>Close</button>
       </div>
-      <div class="preview-page">${quoteDocHTML(q)}</div>
+      <div class="preview-page" id="qp-page">${pageHTML(currentRev)}</div>
     </div>`;
   document.body.appendChild(wrap);
   const close = ()=> wrap.remove();
   wrap.querySelector("[data-px]").onclick = close;
   wrap.onclick = e=>{ if (e.target === wrap) close(); };
-  wrap.querySelector("[data-pp]").onclick = ()=> printQuoteDoc(q);
+  wrap.querySelector("[data-pp]").onclick = ()=> printQuoteDoc(withVersion(selectedRev));
+  const sel = wrap.querySelector("#qp-rev-select");
+  if (sel) sel.addEventListener("change", ()=>{
+    selectedRev = Number(sel.value);
+    wrap.querySelector("#qp-page").innerHTML = pageHTML(selectedRev);
+  });
 }
 
 function printQuoteDoc(q){
