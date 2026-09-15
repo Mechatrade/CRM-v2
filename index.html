@@ -1526,12 +1526,22 @@ function iqManualCombo(items, suppliers){
     (it.winnerIdx!=null && isQuoted((it.costs||[])[it.winnerIdx])) ? it.winnerIdx : null);
   const usedSuppliers = Array.from(new Set(itemWinners.filter(x=>x!=null)));
   const allCovered = items.length>0 && itemWinners.every(x=>x!=null);
-  const goods = items.reduce((sum,it,idx)=>{
-    const wi = itemWinners[idx];
-    return wi==null ? sum : sum + Number(it.qty||0)*Number((it.costs||[])[wi]);
-  }, 0);
-  const shipping = usedSuppliers.reduce((sum,i)=> sum + Number(suppliers[i]?.shippingCost||0), 0);
-  return { itemWinners, usedSuppliers, allCovered, total: goods + shipping };
+  // Grouped by currency, not blended into one figure — a USD winner and a
+  // PHP winner can't be added together without a conversion this app
+  // deliberately doesn't do here (see the "aren't currency-converted" note).
+  const curOf = i => { const s = suppliers[i]||{}; return s.purchaseType==="International" ? (s.currency||"USD") : "PHP"; };
+  const byCurrency = {};
+  items.forEach((it,idx)=>{
+    const wi = itemWinners[idx]; if (wi==null) return;
+    const cur = curOf(wi);
+    byCurrency[cur] = (byCurrency[cur]||0) + Number(it.qty||0)*Number((it.costs||[])[wi]||0);
+  });
+  usedSuppliers.forEach(i=>{
+    const cur = curOf(i);
+    byCurrency[cur] = (byCurrency[cur]||0) + Number(suppliers[i]?.shippingCost||0);
+  });
+  const totalLabel = Object.entries(byCurrency).map(([cur,amt])=> fx(amt, cur)).join(" + ") || fx(0,"PHP");
+  return { itemWinners, usedSuppliers, allCovered, byCurrency, totalLabel };
 }
 /* Formats a figure in its own currency (CUR_SYM), unlike money() which
    always uses the org's base currency — for showing a foreign supplier's
@@ -6269,7 +6279,8 @@ function openInquiryForm(id, preset){
       const card = document.querySelector(`#iq-totals [data-total="${i}"]`);
       if (!card) return;
       card.querySelector("[data-tname]").textContent = (s.name || `Supplier ${i+1}`) + (s.purchaseType==="International" ? ` (${s.currency||"USD"})` : "");
-      card.querySelector("[data-tval]").innerHTML = money(totals[i]);
+      const supCur = s.purchaseType==="International" ? (s.currency||"USD") : "PHP";
+      card.querySelector("[data-tval]").innerHTML = fx(totals[i], supCur);
     });
 
     // Your ticked winner(s), whatever they are — always shown so it's clear
@@ -6283,7 +6294,7 @@ function openInquiryForm(id, preset){
         selBox.innerHTML = `<div class="card" style="padding:12px;margin-top:12px${chosen.allCovered?";border-color:var(--accent)":""}">
           <div style="font-size:12px;font-weight:600">Ticked winner(s)${chosen.usedSuppliers.length>1?` — split across ${chosen.usedSuppliers.length} suppliers`:""}</div>
           <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${esc(names)}</div>
-          <div style="font-size:18px;font-weight:600;margin:6px 0;font-family:var(--mono)">${money(chosen.total)}</div>
+          <div style="font-size:18px;font-weight:600;margin:6px 0;font-family:var(--mono)">${chosen.totalLabel}</div>
           ${chosen.allCovered ? "" : `<div style="font-size:11.5px;color:var(--warn)">Some items don't have a Winner ticked yet — they won't carry through to Product Costing.</div>`}
         </div>`;
       }
@@ -6482,7 +6493,7 @@ function openInquiryDetail(id){
       </div>
       <p class="note" style="margin-top:8px">
         ${chosen.usedSuppliers.length
-          ? `${chosen.usedSuppliers.length>1?`Split across ${chosen.usedSuppliers.length} suppliers`:`${esc(suppliers[chosen.usedSuppliers[0]]?.name||"This supplier")} ticked as winner`} — combined total ${money(chosen.total)}${!chosen.allCovered?" (doesn't cover every item)":""}.`
+          ? `${chosen.usedSuppliers.length>1?`Split across ${chosen.usedSuppliers.length} suppliers`:`${esc(suppliers[chosen.usedSuppliers[0]]?.name||"This supplier")} ticked as winner`} — combined total ${chosen.totalLabel}${!chosen.allCovered?" (doesn't cover every item)":""}.`
           : `No winner ticked yet — edit this inquiry and tick a Winner per item in each supplier's "Items quoted" list.`}
       </p>` : `<div class="card" style="padding:14px;margin-top:14px"><p style="color:var(--muted);font-size:13px;margin:0">No suppliers canvassed yet. Edit this inquiry to add suppliers and pricing.</p></div>`}
 
@@ -7577,7 +7588,7 @@ function inquiryDocHTML(d){
         ${s?.shippingCost?`<div style="font-size:9px;color:#8496A7">+ ${s.purchaseType==="International"?fx(s.shippingCost,s.currency):money(s.shippingCost)} shipping</div>`:""}
       </div>`).join("")}
     </div>
-    ${chosen.usedSuppliers.length>1 ? `<p style="font-size:9.5px;color:#8496A7;margin-top:8px">Order split across ${chosen.usedSuppliers.length} suppliers — combined total ${money(chosen.total)}${!chosen.allCovered?" (doesn't cover every item)":""}.</p>` : ""}
+    ${chosen.usedSuppliers.length>1 ? `<p style="font-size:9.5px;color:#8496A7;margin-top:8px">Order split across ${chosen.usedSuppliers.length} suppliers — combined total ${chosen.totalLabel}${!chosen.allCovered?" (doesn't cover every item)":""}.</p>` : ""}
     ` : `<table class="it"><thead><tr>
         <th style="width:60px">Code</th><th style="width:80px">Brand</th><th style="width:80px">Model</th><th>Description</th><th style="width:46px">U/M</th><th style="width:46px" class="c">Qty</th>
       </tr></thead>
