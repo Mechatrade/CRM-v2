@@ -913,7 +913,7 @@ select option, select optgroup{ background:var(--opt-bg); color:var(--opt-text);
       <button class="btn icon" id="theme-btn" title="Switch theme" aria-label="Switch colour theme">☾</button>
       <div class="search">
         <span class="mag">⌕</span>
-        <input id="q" type="search" placeholder="Search records…" aria-label="Search records">
+        <input id="q" type="search" placeholder="Search this list… (Enter to search everywhere)" aria-label="Search records">
       </div>
       <button class="btn pri" id="new-btn">New</button>
     </header>
@@ -2155,6 +2155,14 @@ window.addEventListener("hashchange", ()=>{
   if (r && r !== state.route && state.profile) setRoute(r);
 });
 $("#q").addEventListener("input", e=>{ state.search = e.target.value.toLowerCase(); render(); });
+// Typing filters whatever list is on screen, same as always. Enter goes
+// further — a cross-module search across the whole CRM, grouped by record
+// type, for when what you're looking for isn't necessarily on this page.
+$("#q").addEventListener("keydown", e=>{
+  if (e.key !== "Enter") return;
+  const term = $("#q").value.trim();
+  if (term) openGlobalSearch(term);
+});
 
 const NEW_FOR = { leads:"leads", pipeline:"deals", accounts:"accounts", contacts:"contacts",
                   activities:"activities", campaigns:"campaigns", dashboard:"activities",
@@ -2417,9 +2425,116 @@ function pillFor(key,v){
 }
 function matches(d,col){
   if(!state.search) return true;
+  if (col === "inquiries"){
+    // Control number is what sales actually traces an inquiry by — restrict
+    // to it specifically so a stray word match elsewhere in the record
+    // doesn't bury the one you're actually looking for.
+    return String(d.controlNo||"").toLowerCase().includes(state.search);
+  }
   return SCHEMAS[col].fields.some(f=>{
     const v = f.type==="ref" ? refLabel(f.refTo,d[f.k],d) : d[f.k];
     return String(v??"").toLowerCase().includes(state.search);
+  });
+}
+/* A short second line for a global-search result row — whatever's most
+   identifying for that record type, beyond its title. */
+function searchSubtitle(col,d){
+  const parts = [];
+  if (d.controlNo) parts.push(d.controlNo);
+  if (col==="quotations"){ if (d.status) parts.push(d.status); if (d.total) parts.push(money(d.total)); }
+  else if (col==="costing"){ if (d.supplierName) parts.push(d.supplierName); if (d.status) parts.push(d.status); }
+  else if (col==="contacts"){ if (d.accountId) parts.push(recordTitle("accounts",d.accountId)); }
+  else if (col==="deals"){ if (d.stage) parts.push(d.stage); if (d.value) parts.push(money(d.value)); }
+  else if (col==="accounts"){ if (d.city) parts.push(d.city); if (d.phone) parts.push(d.phone); }
+  else if (d.status) parts.push(d.status);
+  return parts.filter(Boolean).join(" · ") || "—";
+}
+/* Searches every collection's own fields for a direct text match, then
+   expands: if the term also matches a Customer or Lead by name, every
+   record that references that Customer/Lead (quotations, costing,
+   inquiries, contacts, deals, activities, follow-ups...) is pulled in too
+   — even when that record's own text doesn't contain the search term —
+   because "search a customer name" should mean "show me everything under
+   that customer," not just records that happen to repeat the name. rows()
+   already applies department scoping, so results respect the same
+   visibility rules as the rest of the app. */
+function globalSearch(term){
+  const q = term.trim().toLowerCase();
+  const groups = {};
+  if (!q) return groups;
+  const seen = {};   // col -> Set of ids already added, so relationship expansion never duplicates a direct hit
+  const push = (col, d) => {
+    const S = SCHEMAS[col]; if (!S) return;
+    seen[col] = seen[col] || new Set();
+    if (seen[col].has(d.id)) return;
+    seen[col].add(d.id);
+    const label = S.plural || S.label;
+    (groups[label] = groups[label] || []).push({ col, id:d.id, title: titleOf(col,d), sub: searchSubtitle(col,d) });
+  };
+
+  const SEARCHABLE = ["leads","accounts","contacts","inquiries","costing","quotations",
+                       "salesorders","deals","activities","followups","products","suppliers","campaigns"];
+  SEARCHABLE.forEach(col=>{
+    const S = SCHEMAS[col]; if (!S) return;
+    rows(col).forEach(d=>{
+      const hit = S.fields.some(f=>{
+        const v = f.type==="ref" ? refLabel(f.refTo,d[f.k],d) : d[f.k];
+        return String(v??"").toLowerCase().includes(q);
+      });
+      if (hit) push(col, d);
+    });
+  });
+
+  const matchedAccountIds = new Set(rows("accounts").filter(a=>(a.name||"").toLowerCase().includes(q)).map(a=>a.id));
+  const matchedLeadIds    = new Set(rows("leads").filter(l=>(l.company||"").toLowerCase().includes(q)).map(l=>l.id));
+  if (matchedAccountIds.size || matchedLeadIds.size){
+    const bothIds = new Set([...matchedAccountIds, ...matchedLeadIds]);
+    [["contacts","accountId",matchedAccountIds], ["deals","accountId",matchedAccountIds],
+     ["quotations","accountId",matchedAccountIds], ["costing","accountId",matchedAccountIds],
+     ["salesorders","accountId",matchedAccountIds], ["inquiries","relatedId",bothIds],
+     ["activities","relatedId",bothIds], ["followups","relatedId",bothIds]
+    ].forEach(([col,key,idSet])=>{
+      rows(col).forEach(d=>{ if (d[key] && idSet.has(d[key])) push(col, d); });
+    });
+  }
+  return groups;
+}
+function openGlobalSearch(term){
+  const groups = globalSearch(term);
+  const keys = Object.keys(groups);
+  const wrap = document.createElement("div");
+  wrap.className = "scrim preview-scrim";
+  wrap.innerHTML = `
+    <div class="preview-shell" style="max-width:720px">
+      <div class="preview-bar">
+        <span class="eyebrow">Search results for "${esc(term)}"</span>
+        <div style="flex:1"></div>
+        <button class="btn sm" data-px>Close</button>
+      </div>
+      <div class="preview-page" style="display:block;padding:22px 16px">
+        ${keys.length ? keys.map(k=>`
+          <div class="card" style="padding:14px 16px;margin-bottom:14px;max-width:680px">
+            <div class="eyebrow" style="margin-bottom:8px">${esc(k)} (${groups[k].length})</div>
+            ${groups[k].slice(0,8).map(r=>`
+              <div class="lnkish" data-open="${r.col}:${r.id}"
+                   style="display:flex;justify-content:space-between;gap:12px;padding:7px 0;
+                          border-bottom:1px solid var(--line-2);cursor:pointer;text-decoration:none">
+                <span style="color:var(--text)">${esc(r.title)}</span>
+                <span style="color:var(--muted);font-size:12.5px;white-space:nowrap">${esc(r.sub)}</span>
+              </div>`).join("")}
+            ${groups[k].length>8?`<div style="font-size:11.5px;color:var(--faint);margin-top:6px">+${groups[k].length-8} more — refine your search</div>`:""}
+          </div>`).join("")
+        : `<div class="card" style="padding:20px;max-width:680px"><p style="color:var(--muted);margin:0">No matches found for "${esc(term)}".</p></div>`}
+      </div>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close = ()=> wrap.remove();
+  wrap.querySelector("[data-px]").onclick = close;
+  wrap.onclick = e=>{ if (e.target === wrap) close(); };
+  wrap.querySelectorAll("[data-open]").forEach(el=> el.onclick = ()=>{
+    const [c,rid] = el.dataset.open.split(":");
+    close();
+    openDetail(c,rid);
   });
 }
 function ownerOptions(sel){
