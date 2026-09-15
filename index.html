@@ -2355,7 +2355,7 @@ function approvalHistoryHTML(d){
       ${n ? `<span class="eyebrow">${n} revision${n===1?"":"s"}</span>` : ""}</div>
     ${d.approvalLog.slice().reverse().map(e=>`
       <div style="display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line-2)">
-        <span class="pill ${e.action==="Approved"?"accent":"alert"}" style="margin-top:1px">${esc(e.action)}</span>
+        <span class="pill ${e.action==="Approved"?"accent":e.action==="Revised"?"warn":"alert"}" style="margin-top:1px">${esc(e.action)}</span>
         <div style="flex:1">
           <div style="font-size:13px">${esc(e.byName)} <span style="color:var(--muted)">— ${esc(e.byRole)}</span></div>
           <div style="font-size:11.5px;color:var(--muted)">${fmtDate(e.at)}</div>
@@ -4410,6 +4410,7 @@ function wireView(){
         toast(`Marked ${el.value}`);
         if (col === "costing" && ["Approved","Rejected"].includes(el.value)){
           await recordApprovalEvent(col, id, el.value);
+          if (el.value === "Approved") await syncQuotationFromCosting(id);
         }
         if (col === "quotations"){
           if (["Approved","Declined"].includes(el.value)) await recordApprovalEvent(col, id, el.value);
@@ -4641,6 +4642,45 @@ async function recordApprovalEvent(col, id, action){
   }
   try{ await updateDoc(doc(db,col,id), patch); }
   catch(e){ console.warn("approval log", e); }
+}
+/* After a costing sheet is (re-)approved, bring its linked quotation back
+   in step — but only while that quotation is still Draft. Once a quote has
+   gone out (Sent, Viewed, or further), it's already in the customer's
+   hands and updating it silently would be the wrong call — flag it for a
+   human instead. Mirrors proceedRecord()'s "costing" branch: gathers every
+   sibling sheet sharing the same control number and only proceeds once
+   every one of them is Approved, so the quotation always reflects the
+   full picture, not a partial one. */
+async function syncQuotationFromCosting(costingId){
+  const c = state.data.costing.get(costingId);
+  if (!c || !c.controlNo) return;
+  const q = rows("quotations").find(x=>x.controlNo===c.controlNo);
+  if (!q) return;                                   // nothing generated yet — Proceed will handle it
+  if (q.status !== "Draft"){
+    toast(`Note: quotation ${q.quoteNo} has already moved past Draft — check whether it needs a manual update.`, true);
+    return;
+  }
+  const siblings = rows("costing").filter(x=>x.controlNo===c.controlNo)
+    .map(x=> x.id===costingId ? { ...x, status:"Approved" } : x);  // we just approved this one — don't wait on the listener to catch up
+  if (siblings.some(x=>x.status!=="Approved")) return;   // still waiting on other sheets under this control no.
+  const items = siblings.flatMap(x=> costingItemQuotes(x));
+  const t = quoteTotals(items, q.discountPct||0, q.taxPct||0);
+  const me = state.users.get(myUid());
+  const entry = {
+    action: "Revised", by: myUid(),
+    byName: me?.displayName || state.profile?.displayName || "—",
+    byRole: ROLES[me?.role]?.label || me?.role || "—",
+    at: new Date().toISOString()
+  };
+  try{
+    await updateDoc(doc(db,"quotations",q.id), {
+      items, subtotal: t.sub, total: t.total,
+      revision: Number(q.revision||0) + 1,
+      approvalLog: Array.isArray(q.approvalLog) ? [...q.approvalLog, entry] : [entry],
+      updatedAt: serverTimestamp()
+    });
+    toast(`Quotation ${q.quoteNo} updated to match the revised costing.`);
+  }catch(e){ console.warn("quote sync", e); }
 }
 /* Rebuild a series from the quotations that actually exist. */
 async function repairSeries(key){
@@ -6372,6 +6412,7 @@ function openCostingForm(id, preset){
     </div>
     <div class="modal-f">
       ${id?`<button class="btn dgr" id="co-del">Delete</button>`:""}
+      ${id?`<button class="btn" id="co-preview" type="button">Preview</button>`:""}
       <div class="spacer"></div>
       <button class="btn" data-close>Cancel</button>
       <button class="btn pri" id="co-save">${id?"Save costing sheet":"Create costing sheet"}</button>
@@ -6526,6 +6567,9 @@ function openCostingForm(id, preset){
   const del = document.querySelector("#co-del");
   if (del) del.onclick = async ()=>{ if (await deleteRecord("costing", id)) closeModal(true); };
 
+  const previewBtn = document.querySelector("#co-preview");
+  if (previewBtn) previewBtn.onclick = ()=> openCostingPreview(state.data.costing.get(id) || d);
+
   $("#co-save").onclick = async ()=>{
     const box = $("#form-err");
     const supplierName = $("#co-supplier").value.trim();
@@ -6558,6 +6602,23 @@ function openCostingForm(id, preset){
       updatedAt: serverTimestamp()
     };
     if (!id) payload.status = "Draft";
+    const wasApproved = id && d.status === "Approved";
+    if (wasApproved){
+      // The approval that's on file was for the old numbers — changing
+      // anything here means it needs a fresh look before it can carry
+      // forward into (or update) a quotation.
+      payload.status = "Submitted for Approval";
+      payload.approvedBy = null; payload.approvedAt = null;
+      payload.revision = Number(d.revision||0) + 1;
+      const me = state.users.get(myUid());
+      const entry = {
+        action: "Revised", by: myUid(),
+        byName: me?.displayName || state.profile?.displayName || "—",
+        byRole: ROLES[me?.role]?.label || me?.role || "—",
+        at: new Date().toISOString()
+      };
+      payload.approvalLog = Array.isArray(d.approvalLog) ? [...d.approvalLog, entry] : [entry];
+    }
     $("#co-save").disabled = true;
     try{
       if (id) await tracked(updateDoc(doc(db,"costing",id), payload));
@@ -6565,7 +6626,10 @@ function openCostingForm(id, preset){
         payload.createdAt = serverTimestamp(); payload.createdBy = myUid();
         await tracked(addDoc(collection(db,"costing"), payload));
       }
-      closeModal(true); toast("Costing sheet " + (id?"saved":"created"));
+      closeModal(true);
+      toast(wasApproved
+        ? "Costing sheet saved — since it was Approved, editing it reset the status to Submitted for Approval and it needs re-approval."
+        : "Costing sheet " + (id?"saved":"created"));
       if (!id && typeof d.__onSaved === "function") d.__onSaved();
     }catch(e){
       $("#co-save").disabled = false;
@@ -7229,6 +7293,62 @@ function inquiryDocHTML(d){
     <div class="foot">${esc(st.companyName || "")}${st.companyWeb?" · "+esc(st.companyWeb):""}
       ${st.companyPhone?" · "+esc(st.companyPhone):""}</div>
   </div>`;
+}
+/* A quick audit summary for a costing sheet — who worked it out, who
+   approved it, what quotation (if any) it's connected to, and its full
+   approval history. Not a customer-facing printable document like the
+   Inquiry/Quotation previews — this is the internal "what happened to this
+   sheet" view, reachable from inside the edit form without losing your
+   place. */
+function costingSummaryHTML(d){
+  const f = costingFigures(d);
+  const linkedQuote = d.controlNo ? rows("quotations").find(q=>q.controlNo===d.controlNo) : null;
+  const siblings = d.controlNo ? rows("costing").filter(c=>c.controlNo===d.controlNo) : [];
+  return `<div class="card" style="max-width:640px;width:100%;padding:20px">
+    <div class="eyebrow" style="margin-bottom:2px">Product costing summary</div>
+    <h3 style="margin:0 0 16px;font-family:var(--display)">${esc(d.controlNo || d.supplierName || "Costing sheet")}</h3>
+    <div class="det">
+      <div class="r"><div class="k">Customer</div><div class="v">${esc(recordTitle("accounts",d.accountId))}</div></div>
+      <div class="r"><div class="k">Supplier</div><div class="v">${esc(d.supplierName||"—")}</div></div>
+      <div class="r"><div class="k">Status</div><div class="v">${pillFor("status",d.status||"Draft")}</div></div>
+      ${Number(d.revision||0) ? `<div class="r"><div class="k">Revisions</div><div class="v">${Number(d.revision)}</div></div>` : ""}
+      <div class="r"><div class="k">Worked out by</div><div class="v">${personCell(d.ownerId)}</div></div>
+      <div class="r"><div class="k">Date created</div><div class="v mono" style="font-size:13px">${fmtDate(d.createdAt)}</div></div>
+      ${d.status==="Approved" ? `<div class="r"><div class="k">Approved by</div><div class="v">${personCell(d.approvedBy)}
+        <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(d.approvedAt)}</div></div></div>` : ""}
+      ${d.status==="Rejected" ? `<div class="r"><div class="k">Rejected by</div><div class="v">${personCell(d.rejectedBy)}
+        <div style="font-size:11.5px;color:var(--muted);margin-top:3px">${fmtDate(d.rejectedAt)}</div></div></div>` : ""}
+      <div class="r"><div class="k">Connected quotation</div><div class="v">${linkedQuote
+        ? `<span class="lnkish" data-open="quotations:${linkedQuote.id}">${esc(linkedQuote.quoteNo)}</span> — ${pillFor("status", linkedQuote.status)}`
+        : `<span style="color:var(--faint)">Not generated yet</span>`}</div></div>
+      ${siblings.length>1 ? `<div class="r"><div class="k">Sibling sheets</div><div class="v">${siblings.length} costing sheets share control no. ${esc(d.controlNo)}</div></div>` : ""}
+    </div>
+    <div class="totals" style="margin-top:16px">
+      <div class="row"><span>Total cost</span><span>${money(f.cost)}</span></div>
+      <div class="row grand"><span>Customer pays</span><span>${money(f.quoted)}</span></div>
+    </div>
+    ${approvalHistoryHTML(d)}
+  </div>`;
+}
+function openCostingPreview(d){
+  const wrap = document.createElement("div");
+  wrap.className = "scrim preview-scrim";
+  wrap.innerHTML = `
+    <div class="preview-shell">
+      <div class="preview-bar">
+        <span class="eyebrow">Costing summary</span>
+        <div style="flex:1"></div>
+        <button class="btn sm" data-px>Close</button>
+      </div>
+      <div class="preview-page">${costingSummaryHTML(d)}</div>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close = ()=> wrap.remove();
+  wrap.querySelector("[data-px]").onclick = close;
+  wrap.onclick = e=>{ if (e.target === wrap) close(); };
+  wrap.querySelectorAll("[data-open]").forEach(el=> el.onclick = ()=>{
+    const [c,cid] = el.dataset.open.split(":"); close(); openDetail(c,cid);
+  });
 }
 function openInquiryPreview(d){
   const wrap = document.createElement("div");
