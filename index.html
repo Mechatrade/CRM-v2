@@ -1018,6 +1018,7 @@ const ROLES = {
   procurement_manager:   { label:"Procurement Manager",           dept:"Sales",                 tier:"manager" },
   procurement_supervisor:{ label:"Procurement Supervisor",        dept:"Sales",                 tier:"manager" },
   procurement_officer:   { label:"Procurement Officer",           dept:"Sales",                 tier:"staff"   },
+  sales_operations_specialist: { label:"Sales Operations Specialist", dept:"Sales",             tier:"staff"   },
   bd_manager:            { label:"Business Development Manager",  dept:"Business Development",  tier:"manager" },
   bd_supervisor:         { label:"Business Development SV",       dept:"Business Development",  tier:"manager" },
   bd_officer:            { label:"Business Development Officer",  dept:"Business Development",  tier:"staff"   },
@@ -1061,6 +1062,11 @@ const DEFAULT_SETTINGS = {
   industries:  ["Construction","Manufacturing","Retail","Logistics","Real Estate","Healthcare","Education","Government","Hospitality","Financial Services","Other"],
   lostReasons: ["Price too high","Lost to competitor","No budget","No decision","Timing","No response","Not a fit"],
   channels:    ["Facebook Ads","Google Ads","LinkedIn","Email Campaign","Trade Show","Seminar","Product Launch","Print","Webinar","Referral Program"],
+  // Sales Persons are a name list, not CRM accounts — they don't log in.
+  // Procurement (Manager/Supervisor/Officer) does all the actual CRM work;
+  // this list exists purely so a Customer, and everything raised against
+  // it, can be tagged with which Sales Person's book it belongs to.
+  salesPersons: [],
   staleDays:   [7, 21],
   managerEdit: true,          // may officers and managers edit their team's records?
   companyName: "MECHATRADE INDUSTRIAL SOLUTIONS INC.",
@@ -1142,6 +1148,7 @@ const SCHEMAS = {
       { k:"address",  l:"Address",      type:"text",   full:true },
       { k:"ownerId",  l:"Owner",        type:"ref",    refTo:"users", table:true, assignOnly:true },
       { k:"accountManagerId", l:"Account manager", type:"ref", refTo:"users", table:true },
+      { k:"salesPerson", l:"Sales Person", type:"select", optsFrom:"salesPersons", table:true },
       { k:"documents",l:"Documents",    type:"links",  full:true },
       { k:"notes",    l:"Shared notes", type:"textarea", full:true, table:true },
       { k:"deptNotes",l:"Your department's notes", type:"deptnotes", full:true }
@@ -1204,6 +1211,7 @@ const SCHEMAS = {
       { k:"quoteType",  l:"Quote type",  type:"select", opts:["Our Offered Item/s","Direct Quote","Special/Custom Quote"], table:true },
       { k:"total",      l:"Total",       type:"money",  table:true },
       { k:"ownerId",    l:"Owner",       type:"ref",    refTo:"users", table:true, assignOnly:true },
+      { k:"salesPerson",l:"Sales Person",type:"text",   table:true, system:true },
       { k:"terms",      l:"Terms & notes", type:"textarea", full:true }
     ]
   },
@@ -1321,6 +1329,7 @@ const SCHEMAS = {
       { k:"status",         l:"Status",           type:"select",
         opts:["Open","For Sourced Out","Canvassed","Proceed Costing","No Quote"], def:"Open", table:true },
       { k:"ownerId",        l:"Owner",            type:"ref",    refTo:"users", table:true, assignOnly:true },
+      { k:"salesPerson",    l:"Sales Person",     type:"text",   table:true, system:true },
       { k:"notes",          l:"Notes",            type:"textarea", full:true }
     ]
   },
@@ -1365,6 +1374,7 @@ const SCHEMAS = {
       { k:"rejectedBy",    l:"Rejected by",       type:"ref",    refTo:"users" },
       { k:"rejectedAt",    l:"Rejected on",       type:"date" },
       { k:"ownerId",       l:"Owner",             type:"ref",    refTo:"users", table:true, assignOnly:true },
+      { k:"salesPerson",   l:"Sales Person",      type:"text",   table:true, system:true },
       { k:"remarks",       l:"Remarks",           type:"textarea", full:true }
     ]
   },
@@ -1377,6 +1387,7 @@ const SCHEMAS = {
       { k:"followUpDate",  l:"Follow up on",  type:"date",   table:true },
       { k:"status",        l:"Status",        type:"select", opts:["Pending","Done"], def:"Pending", table:true },
       { k:"ownerId",       l:"Owner",         type:"ref",    refTo:"users", table:true, assignOnly:true },
+      { k:"salesPerson",   l:"Sales Person",  type:"text",   table:true, system:true },
       { k:"notes",         l:"Notes",         type:"textarea", full:true }
     ]
   },
@@ -2116,6 +2127,14 @@ function openChangePasswordModal(){
    only to whoever owns/created them, the parent account's manager, or a
    manager overseeing that department (see canSee() in the rules). */
 const SHARED_COLLECTIONS = ["accounts","products","suppliers"];
+// Manager and Supervisor tier already see their whole department via the
+// generic tier check below — this constant exists only to bring staff-tier
+// roles that need the same visibility (Procurement Officer, Sales
+// Operations Specialist) up to par in these specific Sales & Quotation
+// Management modules, without granting them a manager's full department
+// reach or approval rights.
+const SALES_OPS_COLLECTIONS = ["inquiries","costing","quotations","followups"];
+function isSalesOpsStaff(){ return ["procurement_officer","sales_operations_specialist"].includes(state.profile?.role); }
 function scopeQueries(col){
   const base = collection(db, col);
   if (isAdmin() || SHARED_COLLECTIONS.includes(col)) return [ query(base) ];
@@ -2128,6 +2147,8 @@ function scopeQueries(col){
   // anything raised against a customer you manage, whoever created it
   qs.push(query(base, where("accountManagerId","==", myUid())));
   if (col === "deals") qs.push(query(base, where("sourcedBy","==", myUid())));
+  if (isSalesOpsStaff() && SALES_OPS_COLLECTIONS.includes(col))
+    qs.push(query(base, where("department","==","Sales")));
   return qs;
 }
 
@@ -2539,6 +2560,12 @@ function canWrite(d, col){
   if (d.accountManagerId === myUid()) return true;        // you hold the customer
   if (isManager() && d.department === state.profile.department)
     return state.settings.managerEdit !== false;          // set in Settings
+  // Procurement Officer: same as Manager/Supervisor get automatically via
+  // their department-wide tier, but scoped to just these Sales modules
+  // (plus Accounts, since "handle the customer list" means editing any
+  // Sales customer, not only ones they personally created).
+  if (isSalesOpsStaff() && d.department === "Sales"
+      && (col === "accounts" || SALES_OPS_COLLECTIONS.includes(col))) return true;
   return false;
 }
 const canEditRecord = canWrite;
@@ -4596,7 +4623,8 @@ const LISTS = [
   { k:"sources",     l:"Lead sources",  h:"Where a lead came from." },
   { k:"industries",  l:"Industries",    h:"Used to segment accounts." },
   { k:"lostReasons", l:"Lost reasons",  h:"Required when a deal is marked Lost." },
-  { k:"channels",    l:"Campaign channels", h:"Marketing channel options." }
+  { k:"channels",    l:"Campaign channels", h:"Marketing channel options." },
+  { k:"salesPersons",l:"Sales Persons", h:"Names only, not CRM logins — tags which Sales Person's customer this is." }
 ];
 function seriesPanel(){
   const audit = seriesAudit();
@@ -5482,6 +5510,14 @@ async function submitForm(col,id){
   if (vals.accountId){
     const acct = state.data.accounts.get(vals.accountId);
     if (acct?.accountManagerId) vals.accountManagerId = acct.accountManagerId;
+    if (acct?.salesPerson) vals.salesPerson = acct.salesPerson;
+  }
+  // Follow-ups (and anything else using relatedType/relatedId instead of a
+  // plain accountId) get the same Sales Person tag when pointed at an
+  // Account directly.
+  if (vals.relatedType === "Account" && vals.relatedId){
+    const acct = state.data.accounts.get(vals.relatedId);
+    if (acct?.salesPerson) vals.salesPerson = acct.salesPerson;
   }
   if (!isManager()) vals.ownerId = id ? (state.data[col].get(id)?.ownerId || myUid()) : myUid();
   if (!vals.ownerId) vals.ownerId = myUid();
@@ -6622,6 +6658,12 @@ function openInquiryForm(id, preset){
       notes: $("#iq-notes").value||null,
       updatedAt: serverTimestamp()
     };
+    // Tag which Sales Person's book this is — copied from the Customer,
+    // never typed here, so Procurement never has to think about it.
+    if (payload.relatedType === "Account" && payload.relatedId){
+      const acct = state.data.accounts.get(payload.relatedId);
+      if (acct?.salesPerson) payload.salesPerson = acct.salesPerson;
+    }
     if (id) payload.controlNo = $("#iq-control")?.value.trim() || d.controlNo || null;
     // Status is never set from this form — a new inquiry always starts
     // Open, and every later stage (For Sourced Out, Canvassed, Proceed
@@ -7096,6 +7138,7 @@ function openCostingForm(id, preset){
       inquiryId: d.inquiryId || null,
       accountId: $("#co-acct").value || null, dealId: $("#co-deal").value || null,
       accountManagerId: state.data.accounts.get($("#co-acct").value)?.accountManagerId || null,
+      salesPerson: state.data.accounts.get($("#co-acct").value)?.salesPerson || null,
       ownerId, department: owner?.department || state.profile.department,
       supplierName, supplierContact: $("#co-contact").value.trim()||null,
       supplierEmail: $("#co-email").value.trim()||null, supplierRef: $("#co-ref").value.trim()||null,
@@ -7560,6 +7603,7 @@ function openQuoteForm(id, preset){
       subtotal:t.sub, total:t.total, terms:$("#q-terms").value||null,
       ownerId, department: state.users.get(ownerId)?.department || state.profile.department,
       accountManagerId: state.data.accounts.get($("#q-acct").value)?.accountManagerId || null,
+      salesPerson: state.data.accounts.get($("#q-acct").value)?.salesPerson || null,
       controlNo: ($("#q-control")?.value.trim() || q.controlNo || null),
       costingId: q.costingId || null,
       updatedAt: serverTimestamp()
