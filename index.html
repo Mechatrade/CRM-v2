@@ -4790,7 +4790,7 @@ function viewSettings(){
         <div class="field full">
           <label for="s-manageredit">Who may edit a colleague's record</label>
           <select id="s-manageredit">
-            <option value="true"${s.managerEdit !== false?" selected":""}>Officers and managers may edit their whole department</option>
+            <option value="true"${s.managerEdit !== false?" selected":""}>Managers and Supervisors may edit their whole department</option>
             <option value="false"${s.managerEdit === false?" selected":""}>Only the person who owns a record may edit it</option>
           </select>
           <span class="hint">Either way, everyone still <em>sees</em> what their role allows, and
