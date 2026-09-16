@@ -6321,6 +6321,9 @@ function openInquiryForm(id, preset){
           <select id="iq-reltype">${["Lead","Account"].map(o=>opt(o,d.relatedType||"Lead")).join("")}</select></div>
         <div class="field"><label for="iq-relid">Lead / Customer</label>
           <select id="iq-relid" data-dynamic="1">${myDynamicOptions(d.relatedType||"Lead", d.relatedId)}</select></div>
+        <div class="field"><label>Sales Person</label>
+          <div id="iq-salesperson" class="hint" style="padding:8px 10px;background:var(--input-bg);border:1px solid var(--input-brd);border-radius:6px;min-height:20px">—</div>
+          <span class="hint">Follows the customer automatically — set it on the Customer record, not here.</span></div>
         <div class="field"><label for="iq-contact">Contact person</label>
           <select id="iq-contact"><option value="">—</option></select>
           <span class="hint">Auto-filtered to the selected customer's contacts.</span></div>
@@ -6385,11 +6388,23 @@ function openInquiryForm(id, preset){
       list.map(c=>`<option value="${c.id}"${c.id===cur?" selected":""}>${esc(recordTitle("contacts",c.id))}</option>`).join("");
     if (type === "Account" && list.length === 1 && !cur) $("#iq-contact").value = list[0].id;
   }
+  function refreshSalesPersonPreview(){
+    const type = $("#iq-reltype").value, relId = $("#iq-relid").value;
+    const el = $("#iq-salesperson");
+    if (type === "Account" && relId){
+      const acct = state.data.accounts.get(relId);
+      el.textContent = acct?.salesPerson || "Not set on this customer — add one from Customers";
+    } else {
+      el.textContent = type === "Lead" ? "Set once this lead becomes a Customer" : "—";
+    }
+  }
+  refreshSalesPersonPreview();
   $("#iq-reltype").addEventListener("change", ()=>{
     $("#iq-relid").innerHTML = myDynamicOptions($("#iq-reltype").value, "");
     refreshContactOptions();
+    refreshSalesPersonPreview();
   });
-  $("#iq-relid").addEventListener("change", refreshContactOptions);
+  $("#iq-relid").addEventListener("change", ()=>{ refreshContactOptions(); refreshSalesPersonPreview(); });
   refreshContactOptions();
 
   function render(){
