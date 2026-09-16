@@ -990,8 +990,18 @@ const ROLES = {
 };
 const DEPTS = ["Sales","Business Development","Marketing","Admin"];
 const DEPT_CLASS = { "Sales":"accent", "Business Development":"info", "Marketing":"warn", "Admin":"" };
-/* Quotation numbering: MTISI-<dept>-<year>-<month>-<5 digit series>
-   The series restarts each month, per department. */
+/* Quotation numbering: MTISI-<department code>-<mmyy>-<series>.
+   Back to one series per DEPARTMENT (not per role) — reverting the earlier
+   role-based scheme. Capped at 3000 per series per month: a safety
+   ceiling meant to catch a runaway counter, not something any department
+   should routinely approach. */
+const DEPT_CODE = {
+  "Sales":                 "05",
+  "Business Development":  "08",
+  "Marketing":             "07",
+  "Admin":                 "00"
+};
+const QUOTE_SERIES_MAX = 3000;
 const QUOTE_PREFIX = { "Sales":"S", "Business Development":"BD", "Marketing":"M", "Admin":"ADM" };
 const QUOTE_ROOT = "MTISI";
 
@@ -4428,16 +4438,17 @@ function seriesPanel(){
     <tbody>${audit.map(a=>{
       const wrong = a.counter !== a.shouldBe && !a.pool.length;
       return `<tr>
-        <td><strong class="mono" style="font-size:12px">${esc(a.key)}</strong></td>
-        <td class="sample">${a.used.length ? `${a.used.length} · up to ${String(a.highest).padStart(5,"0")}`
+        <td><strong class="mono" style="font-size:12px">${esc(a.key)}</strong>
+          ${describeSeriesKey(a.key)?`<div style="font-size:11px;color:var(--muted)">${esc(describeSeriesKey(a.key))}</div>`:""}</td>
+        <td class="sample">${a.used.length ? `${a.used.length} · up to ${String(a.highest).padStart(3,"0")}`
                                            : `<span style="color:var(--faint)">none</span>`}</td>
         <td><input type="number" min="1" class="seriesnext" data-key="${esc(a.key)}"
               value="${a.counter}" style="width:92px;padding:5px 8px">
             ${wrong?`<div style="font-size:11px;color:var(--warn);margin-top:3px">should be ${a.shouldBe}</div>`:""}</td>
-        <td class="sample">${a.pool.length ? a.pool.map(n=>String(n).padStart(5,"0")).join(", ")
+        <td class="sample">${a.pool.length ? a.pool.map(n=>String(n).padStart(3,"0")).join(", ")
                                            : `<span style="color:var(--faint)">—</span>`}</td>
         <td class="sample">${a.gaps.length ? `<span class="pill alert">${a.gaps.length}</span>
-              ${a.gaps.slice(0,5).map(n=>String(n).padStart(5,"0")).join(", ")}${a.gaps.length>5?"…":""}`
+              ${a.gaps.slice(0,5).map(n=>String(n).padStart(3,"0")).join(", ")}${a.gaps.length>5?"…":""}`
             : `<span class="pill accent">none</span>`}</td>
         <td><button class="btn sm" data-fixseries="${esc(a.key)}">Repair</button></td>
       </tr>`;
@@ -4917,7 +4928,7 @@ async function repairSeries(key){
   if (!a) return;
   const msg = `Repair ${key}?\n\n`
     + `Next number: ${a.counter} → ${a.shouldBe}\n`
-    + (a.gaps.length ? `Free to reuse: ${a.gaps.map(n=>String(n).padStart(5,"0")).join(", ")}\n` : "")
+    + (a.gaps.length ? `Free to reuse: ${a.gaps.map(n=>String(n).padStart(3,"0")).join(", ")}\n` : "")
     + `\nNo quotation already on file is changed.`;
   if (!confirm(msg)) return;
   try{
@@ -4926,7 +4937,7 @@ async function repairSeries(key){
       released: Array.from(new Set([...a.pool, ...a.gaps])).sort((x,y)=>x-y),
       repairedAt: serverTimestamp(), updatedAt: serverTimestamp()
     }, { merge:true });
-    toast(`${key} repaired — next is ${String(a.shouldBe).padStart(5,"0")}`);
+    toast(`${key} repaired — next is ${String(a.shouldBe).padStart(3,"0")}`);
   }catch(e){
     toast(e.code === "permission-denied"
       ? "Only an administrator can repair a series, and the rules must be published."
@@ -4944,7 +4955,7 @@ async function setSeriesNext(key, val){
   }
   try{
     await setDoc(doc(db,"counters",key), { next:n, updatedAt:serverTimestamp() }, { merge:true });
-    toast(`${key} now starts at ${String(n).padStart(5,"0")}`);
+    toast(`${key} now starts at ${String(n).padStart(3,"0")}`);
   }catch(e){ toast(e.message, true); }
 }
 
@@ -5863,16 +5874,16 @@ function dealQuotes(dealId){
    so a manager raising a quote for a rep still numbers it correctly. */
 function quoteDeptOf(ownerId){
   const d = state.users.get(ownerId)?.department;
-  return QUOTE_PREFIX[d] ? d : (actingDept() || state.profile.department);
+  return DEPT_CODE[d] ? d : (actingDept() || state.profile.department);
 }
 function counterKey(dept, isoDate){
   const d = isoDate ? new Date(isoDate) : new Date();
   const when = isNaN(d) ? new Date() : d;
-  const yr = when.getFullYear();
-  const mo = String(when.getMonth()+1).padStart(2,"0");
-  return `${QUOTE_ROOT}-${QUOTE_PREFIX[dept] || "ADM"}-${yr}-${mo}`;
+  const mm = String(when.getMonth()+1).padStart(2,"0");
+  const yy = String(when.getFullYear()).slice(-2);
+  return `${QUOTE_ROOT}-${DEPT_CODE[dept] || "00"}-${mm}${yy}`;
 }
-function formatQuoteNo(key, n){ return `${key}-${String(n).padStart(5,"0")}`; }
+function formatQuoteNo(key, n){ return `${key}-${String(n).padStart(3,"0")}`; }
 /* Numbers freed up when a quotation was deleted, lowest first. */
 function releasedNumbers(key){
   const r = state.counters.get(key)?.released;
@@ -5884,6 +5895,20 @@ function projectedQuoteNo(dept, isoDate){
   const key = counterKey(dept, isoDate);
   const free = releasedNumbers(key);
   return formatQuoteNo(key, free.length ? free[0] : (state.counters.get(key)?.next || 1));
+}
+/* "MTISI-05-0926" -> "Sales Department · September 2026", for the admin
+   series panel — the raw key alone isn't self-explanatory once it's a
+   numeric code instead of a department letter. */
+function describeSeriesKey(key){
+  const m = String(key||"").match(/^MTISI-(\d{2})-(\d{2})(\d{2})$/);
+  if (!m) return "";
+  const [, code, mm, yy] = m;
+  const dept = Object.keys(DEPT_CODE).find(d=>DEPT_CODE[d]===code);
+  const deptLabel = dept ? dept : `Dept code ${code}`;
+  const monthNum = Number(mm);
+  if (monthNum < 1 || monthNum > 12) return deptLabel;
+  const monthName = new Date(2000, monthNum-1, 1).toLocaleString("en-US",{month:"long"});
+  return `${deptLabel} · ${monthName} 20${yy}`;
 }
 /* Split a quote number back into its series and sequence, for older
    quotations saved before those were stored as fields. */
@@ -7364,9 +7389,9 @@ function openQuoteForm(id, preset){
         if (payload.status !== before)
           await syncDealFromQuote({ ...payload, id, total:t.total }, payload.status);
       } else {
-        const key = counterKey(quoteDeptOf(ownerId), payload.issueDate);
+        const dept = quoteDeptOf(ownerId);
+        const key = counterKey(dept, payload.issueDate);
         const makeDeal = payload.dealId === "__new__";
-        const dept = state.users.get(ownerId)?.department || state.profile.department;
         const result = await runTransaction(db, async tx=>{
           const cref = doc(db,"counters",key);
           const snap = await tx.get(cref);
@@ -7376,9 +7401,13 @@ function openQuoteForm(id, preset){
           let n, nextVal = Number(cur.next || 1);
           if (free.length) n = free.shift();          // fill the gap before taking a new one
           else { n = nextVal; nextVal = n + 1; }
+          // A safety ceiling, not a routine limit — if this ever actually
+          // fires, an admin needs to open a new series by hand.
+          if (n > QUOTE_SERIES_MAX)
+            throw new Error(`This series (${key}) has reached its ${QUOTE_SERIES_MAX}-number limit for the month. Ask an admin to open a new series.`);
           const quoteNo = formatQuoteNo(key, n);
           tx.set(cref, { next:nextVal, released:free,
-            department:quoteDeptOf(ownerId), updatedAt:serverTimestamp() }, { merge:true });
+            department:dept, updatedAt:serverTimestamp() }, { merge:true });
 
           const qref = doc(collection(db,"quotations"));
           let dealId = makeDeal ? null : payload.dealId;
