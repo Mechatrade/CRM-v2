@@ -1906,7 +1906,7 @@ onAuthStateChanged(auth, async (u)=>{
   const p = snap.data();
   if (p.active === false){ await signOut(auth); toast("That account has been deactivated.", true); return; }
   const role = ROLES[p.role] ? p.role : "procurement_officer";
-  state.profile = { ...p, uid:u.uid, role, tier:ROLES[role].tier, department:p.department || ROLES[role].dept };
+  state.profile = { ...p, uid:u.uid, role, tier:ROLES[role].tier, department:ROLES[role].dept };
   $("#gate").classList.add("hidden"); $("#noprofile").classList.add("hidden");
   $("#app").classList.remove("hidden");
   window.__setThemeFromProfile?.(p.theme);
@@ -2898,6 +2898,38 @@ function teamSnapshot(){
     </div>
   </div>`;
 }
+/* Marketing's equivalent of teamSnapshot() — leads don't carry a money
+   value the way deals do, so the team breakdown here is generated vs.
+   converted per person for the month, instead of won vs. open pipeline. */
+function marketingTeamSnapshot(){
+  const leads = rows("leads");
+  const ms = monthStart();
+  const byOwner = new Map();
+  leads.forEach(l=>{
+    const o = byOwner.get(l.ownerId) || { generated:0, converted:0 };
+    if (toDate(l.createdAt) >= ms) o.generated++;
+    if (l.status==="Converted") o.converted++;
+    byOwner.set(l.ownerId,o);
+  });
+  const list = Array.from(byOwner.entries())
+    .map(([uid,v])=>({ uid, ...v }))
+    .sort((a,b)=>b.generated-a.generated).slice(0,8);
+  if(!list.length) return "";
+  const max = Math.max(...list.map(l=>l.generated),1);
+  return `
+  <div class="card" style="margin-top:14px">
+    <div class="card-h"><h3>Team this month</h3><div class="spacer"></div>
+      <span class="eyebrow">leads generated · converted</span></div>
+    <div class="bars">
+      ${list.map(l=>`
+      <div class="bar-row">
+        <div class="nm">${esc(userName(l.uid))}</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${l.generated/max*100}%"></div></div>
+        <div class="fig">${l.generated}<div style="font-size:10.5px;color:var(--faint)">${l.converted} converted</div></div>
+      </div>`).join("")}
+    </div>
+  </div>`;
+}
 
 /* ------------------------------------------------------------------ */
 /* 11. GENERIC LIST VIEW                                               */
@@ -3853,16 +3885,18 @@ function viewFiltered(routeKey){
 /* 11h. BUSINESS DEVELOPMENT DASHBOARD                                 */
 /* ------------------------------------------------------------------ */
 function viewBDDashboard(){
-  // Personal, not shared — same as "Your Sales & Quotation Management"
-  // above it, so the whole Dashboard is consistently "my own numbers,"
-  // never the whole department's. Accounts are a shared registry everyone
-  // can read, so it's the only one that needs an explicit ownerId filter;
-  // deals/activities are already scoped to this department by rows(), and
-  // we narrow that further to just this person.
-  const uid = myUid();
-  const accts = rows("accounts").filter(a=>a.ownerId===uid);
-  const deals = rows("deals").filter(d=>d.ownerId===uid);
-  const acts = rows("activities").filter(a=>a.ownerId===uid);
+  const uid = myUid(), mgr = isManager();
+  // Scales with tier, same as the Sales dashboard: personal for a staff
+  // member, whole department for a manager/supervisor. Accounts are a
+  // shared registry (everyone signed in can read every account), so —
+  // unlike deals — it needs an explicit filter either way. Activities are
+  // shared department-wide for Calendar viewing regardless of tier, so it
+  // also needs an explicit narrow-down for staff to keep this personal,
+  // the same way the Task list does.
+  const accts = rows("accounts").filter(a=> mgr ? a.department===state.profile.department : a.ownerId===uid);
+  const deals = mgr ? rows("deals") : rows("deals").filter(d=>d.ownerId===uid);
+  const acts  = mgr ? rows("activities").filter(a=>a.department===state.profile.department)
+                    : rows("activities").filter(a=>a.ownerId===uid);
   const ms = monthStart();
   const active = accts.filter(a=>a.type==="Active");
   const newActive = active.filter(a=>toDate(a.createdAt) >= ms);
@@ -3958,7 +3992,8 @@ function viewBDDashboard(){
       </div>
     </div>
   </div>
-  ${accountAlertCard()}`;
+  ${accountAlertCard()}
+  ${mgr ? teamSnapshot() : ""}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -4142,7 +4177,8 @@ function viewMarketingDashboard(){
         : `<div class="empty"><strong>All picked up</strong>Every lead has been contacted.</div>`}
     </div>
   </div>
-  ${accountAlertCard()}`;
+  ${accountAlertCard()}
+  ${isManager() ? marketingTeamSnapshot() : ""}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -8621,7 +8657,8 @@ function openUserForm(uid){
           <select id="u-role">${Object.entries(ROLES).map(([k,r])=>
             `<option value="${k}"${u?.role===k?" selected":""}>${esc(r.label)}</option>`).join("")}</select></div>
         <div class="field"><label for="u-dept">Department</label>
-          <select id="u-dept">${DEPTS.map(dp=>opt(dp,u?.department)).join("")}</select></div>
+          <input id="u-dept" value="${esc(ROLES[u?.role]?.dept || ROLES[Object.keys(ROLES)[0]].dept)}" disabled>
+          <span class="hint">Set by the role — every role belongs to exactly one department.</span></div>
         <div class="field"><label for="u-target">Monthly target</label>
           <input id="u-target" type="number" min="0" step="any" value="${esc(u?.monthlyTarget||"")}">
           <span class="hint">Leave blank if this role doesn't carry a quota.</span></div>
@@ -8640,7 +8677,6 @@ function openUserForm(uid){
 
   const roleSel = document.querySelector("#u-role");
   roleSel.onchange = ()=>{ document.querySelector("#u-dept").value = ROLES[roleSel.value].dept; };
-  if(!uid) document.querySelector("#u-dept").value = ROLES[roleSel.value].dept;
 
   $("#u-save").onclick = async ()=>{
     const name = $("#u-name").value.trim();
@@ -8650,7 +8686,7 @@ function openUserForm(uid){
     if(!uid && !isValidLoginName(loginName)){ box.textContent="Login Name: 3-30 characters, letters/numbers/dots/dashes/underscores only."; box.classList.remove("hidden"); return; }
     const email = loginNameToEmail(loginName);
     const profile = {
-      displayName:name, email, loginName, role:$("#u-role").value, department:$("#u-dept").value,
+      displayName:name, email, loginName, role:$("#u-role").value, department:ROLES[$("#u-role").value].dept,
       monthlyTarget: Number($("#u-target").value||0) || null,
       commissionRate: Number($("#u-comm").value||0) || null,
       active: $("#u-active").value === "true", updatedAt: serverTimestamp()
