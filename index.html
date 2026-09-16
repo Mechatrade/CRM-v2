@@ -2781,7 +2781,7 @@ function viewDashboard(){
   if (isAdmin() && (!state.workspace || state.workspace === "Admin")) return viewAdminOverview();
 
   const d = actingDept();
-  const fn = { "Sales":viewSalesDashboard, "Business Development":viewBDDashboard, "Marketing":viewMarketingDashboard }[d];
+  const fn = { "Sales":viewBDDashboard, "Business Development":viewBDDashboard, "Marketing":viewMarketingDashboard }[d];
   if (!fn) return viewAdminOverview();   // safety net — every real role maps to one of the three above
 
   // Staff always sees their own numbers, no toggle offered — there's
@@ -3365,141 +3365,6 @@ function avgCloseDays(list){
 }
 
 /* ------------------------------------------------------------------ */
-/* 11c. SALES DASHBOARD                                                */
-/* ------------------------------------------------------------------ */
-function viewSalesDashboard(scope="dept"){
-  const uid = myUid();
-  const own = list => scope==="mine" ? list.filter(d=>d.ownerId===uid) : list;
-  const deals = own(rows("deals")), quotes = own(rows("quotations"));
-  const open  = deals.filter(d=>OPEN_STAGES.includes(d.stage));
-  const won   = deals.filter(d=>d.stage==="Won"), lost = deals.filter(d=>d.stage==="Lost");
-  const wonM  = wonThisMonth(deals);
-  const wonMVal = wonM.reduce((s,d)=>s+Number(d.value||0),0);
-  const target  = Number(state.profile.monthlyTarget||0);
-  const pct = target ? Math.round(wonMVal/target*100) : null;
-  const pipeline = open.reduce((s,d)=>s+Number(d.value||0),0);
-  const weighted = open.reduce((s,d)=>s+Number(d.value||0)*stageProb(d.stage)/100,0);
-  const openQ = quotes.filter(q=>["Draft","Sent","Viewed"].includes(quoteStatus(q)));
-  const openQVal = openQ.reduce((s,q)=>s+Number(q.total||0),0);
-  const closed = won.length + lost.length;
-  const convRate = closed ? Math.round(won.length/closed*100) : 0;
-  const cycle = avgCloseDays(deals);
-  const tasks = own(openTasks());
-  const dueToday = tasks.filter(a=>isToday(a.dueDate));
-  const overdue  = tasks.filter(a=>daysUntil(a.dueDate) < 0);
-  const stale = open.filter(d=>daysSince(d.stageChangedAt||d.createdAt) > state.settings.staleDays[1])
-                    .sort((a,b)=>daysSince(b.stageChangedAt||b.createdAt)-daysSince(a.stageChangedAt||a.createdAt));
-  const closingSoon = open.filter(d=>{const n=daysUntil(d.expectedCloseDate); return n!==null && n<=30;})
-                          .sort((a,b)=>toDate(a.expectedCloseDate)-toDate(b.expectedCloseDate));
-  const newLeads = own(rows("leads")).filter(l=>l.status==="New");
-  const trend = lastMonths(6).map(m=>({
-    label: m.label,
-    value: deals.filter(d=>d.stage==="Won" && toDate(d.closedAt||d.updatedAt)>=m.from && toDate(d.closedAt||d.updatedAt)<m.to)
-                .reduce((s,d)=>s+Number(d.value||0),0)
-  }));
-
-  return `
-  ${chartCard("Sales trend", `won deals · last 6 months${scope==="mine"?" · you":""}`, trend)}
-  <div class="kpis" style="margin-top:14px">
-    <div class="kpi accent"><div class="lbl">Sales this month</div><div class="val mono">${shortMoney(wonMVal)}</div>
-      <div class="foot">${wonM.length} deal${wonM.length===1?"":"s"} closed</div></div>
-    <div class="kpi ${pct===null?"":pct>=100?"accent":pct>=60?"warn":"bad"}">
-      <div class="lbl">Target vs actual</div>
-      <div class="val">${pct===null?"—":pct+"%"}</div>
-      <div class="foot">${target?`${shortMoney(wonMVal)} of ${shortMoney(target)}`:"No target set"}</div></div>
-    <div class="kpi"><div class="lbl">Pipeline value</div><div class="val mono">${shortMoney(pipeline)}</div>
-      <div class="foot">${shortMoney(weighted)} weighted · ${open.length} open</div></div>
-    <div class="kpi ${openQ.length?"warn":""}"><div class="lbl">Open quotations</div><div class="val">${openQ.length}</div>
-      <div class="foot">${shortMoney(openQVal)} awaiting decision</div></div>
-  </div>
-  <div class="kpis">
-    <div class="kpi"><div class="lbl">Won deals</div><div class="val">${won.length}</div>
-      <div class="foot">${shortMoney(won.reduce((s,d)=>s+Number(d.value||0),0))} lifetime</div></div>
-    <div class="kpi"><div class="lbl">Lost deals</div><div class="val">${lost.length}</div>
-      <div class="foot">${shortMoney(lost.reduce((s,d)=>s+Number(d.value||0),0))} walked away</div></div>
-    <div class="kpi"><div class="lbl">Average closing time</div><div class="val">${cycle??"—"}${cycle?`<span style="font-size:15px"> days</span>`:""}</div>
-      <div class="foot">first contact to won</div></div>
-    <div class="kpi"><div class="lbl">Conversion rate</div><div class="val">${convRate}<span style="font-size:16px">%</span></div>
-      <div class="foot">${won.length} won of ${closed} closed</div></div>
-    <div class="kpi ${dueToday.length||overdue.length?"bad":""}"><div class="lbl">Follow-ups due today</div>
-      <div class="val">${dueToday.length}</div>
-      <div class="foot">${overdue.length} already overdue</div></div>
-  </div>
-
-  ${target ? `<div class="card" style="margin-bottom:14px">
-    <div class="card-h"><h3>Target progress</h3><div class="spacer"></div>
-      <span class="mono" style="font-size:12px;color:var(--muted)">${money(wonMVal)} of ${money(target)}</span></div>
-    <div class="bars"><div class="bar-row">
-      <div class="nm">${new Date().toLocaleDateString(undefined,{month:"long"})}</div>
-      <div class="bar-track"><div class="bar-fill ${pct>=100?"":pct>=60?"warn":"alert"}" style="width:${Math.min(pct,100)}%"></div></div>
-      <div class="fig">${pct}%</div>
-    </div></div>
-  </div>`:""}
-
-  <div class="grid" style="grid-template-columns:1fr 1fr">
-    <div class="card">
-      <div class="card-h"><h3>Due today</h3><div class="spacer"></div>
-        <button class="btn sm" data-go="tasks">All tasks</button></div>
-      ${[...overdue,...dueToday].length ? `<div class="tbl-wrap"><table><tbody>
-        ${[...overdue,...dueToday].slice(0,7).map(a=>{
-          const n = daysUntil(a.dueDate);
-          return `<tr>
-            <td style="width:26px"><input type="checkbox" data-done="${a.id}" title="Mark done"></td>
-            <td><span class="lnk" data-open="activities:${a.id}">${esc(a.subject)}</span>
-              <div style="font-size:11.5px;color:var(--muted)">${esc(a.type)} · ${esc(refLabel("dynamic",a.relatedId,a))}</div></td>
-            <td class="num"><span class="pill ${n<0?"alert":"warn"}">${n<0?`${Math.abs(n)}d late`:"Today"}</span></td>
-          </tr>`;
-        }).join("")}</tbody></table></div>`
-        : `<div class="empty"><strong>Clear</strong>Nothing is due today.</div>`}
-    </div>
-
-    <div class="card">
-      <div class="card-h"><h3>Closing within 30 days</h3><div class="spacer"></div>
-        <button class="btn sm" data-go="pipeline">Pipeline</button></div>
-      ${closingSoon.length ? `<div class="tbl-wrap"><table><tbody>
-        ${closingSoon.slice(0,7).map(d=>`<tr>
-          <td><span class="lnk" data-open="deals:${d.id}">${esc(d.title)}</span>
-            <div style="font-size:11.5px;color:var(--muted)">${esc(recordTitle("accounts",d.accountId))} · ${esc(d.stage)}</div></td>
-          <td class="num">${money(d.value)}</td>
-          <td class="num mono" style="font-size:12px">${fmtDate(d.expectedCloseDate)}</td>
-        </tr>`).join("")}</tbody></table></div>`
-        : `<div class="empty"><strong>Nothing imminent</strong>No open deal is due to close this month.</div>`}
-    </div>
-  </div>
-
-  <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:14px">
-    <div class="card">
-      <div class="card-h"><h3>New leads to work</h3><div class="spacer"></div>
-        <button class="btn sm" data-go="leads">All leads</button></div>
-      ${newLeads.length ? `<div class="tbl-wrap"><table><tbody>
-        ${newLeads.slice(0,7).map(l=>`<tr>
-          <td><span class="lnk" data-open="leads:${l.id}">${esc(l.company)}</span>
-            <div style="font-size:11.5px;color:var(--muted)">${esc(l.contactName||"")}${l.source?" · "+esc(l.source):""}</div></td>
-          <td class="num" style="font-size:11.5px;color:var(--muted)">${esc(l.leadRequirements||"—")}</td>
-          <td class="num">${pillFor("rating",l.rating)}</td>
-        </tr>`).join("")}</tbody></table></div>`
-        : `<div class="empty"><strong>No new leads</strong>Everything assigned to you has been contacted.</div>`}
-    </div>
-
-    <div class="card">
-      <div class="card-h"><h3>Deals going cold</h3><div class="spacer"></div>
-        <span class="eyebrow">no movement ${state.settings.staleDays[1]}d+</span></div>
-      ${stale.length ? `<div class="tbl-wrap"><table><tbody>
-        ${stale.slice(0,7).map(d=>`<tr>
-          <td><span class="lnk" data-open="deals:${d.id}">${esc(d.title)}</span>
-            <div style="font-size:11.5px;color:var(--muted)">${esc(recordTitle("accounts",d.accountId))} · ${esc(d.stage)}</div></td>
-          <td class="num">${money(d.value)}</td>
-          <td class="num"><span class="pill alert">${daysSince(d.stageChangedAt||d.createdAt)}d</span></td>
-        </tr>`).join("")}</tbody></table></div>`
-        : `<div class="empty"><strong>Pipeline is moving</strong>No open deal has been sitting still.</div>`}
-    </div>
-  </div>
-
-  ${accountAlertCard()}
-  ${scope==="dept" ? teamSnapshot() : ""}`;
-}
-
-/* ------------------------------------------------------------------ */
 /* 11d. TASKS                                                          */
 /* ------------------------------------------------------------------ */
 function viewTasks(){
@@ -4047,12 +3912,14 @@ function viewFiltered(routeKey){
 /* ------------------------------------------------------------------ */
 function viewBDDashboard(scope="dept"){
   const uid = myUid(), mgr = scope==="dept";
-  // Scales with the scope picked (Department vs My Dashboard), same as the
-  // Sales dashboard. Accounts are a shared registry (everyone signed in
-  // can read every account), so — unlike deals — it needs an explicit
-  // filter either way. Activities are shared department-wide for Calendar
-  // viewing regardless of tier, so it also needs an explicit narrow-down
-  // for the personal view, the same way the Task list does.
+  // Serves both Sales and Business Development identically — the router
+  // maps both departments to this same function, so their dashboards can
+  // never drift apart from each other. Scales with the scope picked
+  // (Department vs My Dashboard). Accounts are a shared registry (everyone
+  // signed in can read every account), so — unlike deals — it needs an
+  // explicit filter either way. Activities are shared department-wide for
+  // Calendar viewing regardless of tier, so it also needs an explicit
+  // narrow-down for the personal view, the same way the Task list does.
   const accts = rows("accounts").filter(a=> mgr ? effectiveDept(a)===actingDept() : a.ownerId===uid);
   const deals = mgr ? rows("deals") : rows("deals").filter(d=>d.ownerId===uid);
   const acts  = mgr ? rows("activities").filter(a=>effectiveDept(a)===actingDept())
