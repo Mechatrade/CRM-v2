@@ -2803,8 +2803,10 @@ function myQuotationSnapshot(){
       <div class="foot">${esc(foot)}</div>
     </div>`;
 
-  const funnelStages = ["Open","Noted","Approved","Quoted","Closed - Won"];
-  const funnelLabels = { "Open":"New Inquiry", "Noted":"Noted", "Approved":"Approved", "Quoted":"Quoted", "Closed - Won":"Won" };
+  // Matches the actual Inquiry status list exactly (Open → For Sourced Out
+  // → Canvassed → Proceed Costing, with No Quote as the dead-end outcome) —
+  // this used to reference an older status list that's since been replaced.
+  const funnelStages = ["Open","For Sourced Out","Canvassed","Proceed Costing","No Quote"];
   const funnelMax = Math.max(...funnelStages.map(s=>myInquiries.filter(i=>i.status===s).length), 1);
 
   const needsFollowUp = pending
@@ -2830,7 +2832,7 @@ function myQuotationSnapshot(){
       <div class="bars">
         ${funnelStages.map(s=>{
           const n = myInquiries.filter(i=>i.status===s).length;
-          return `<div class="bar-row"><div class="nm">${esc(funnelLabels[s])}</div>
+          return `<div class="bar-row"><div class="nm">${esc(s)}</div>
             <div class="bar-track"><div class="bar-fill info" style="width:${n/funnelMax*100}%"></div></div>
             <div class="fig">${n}</div></div>`;
         }).join("")}
