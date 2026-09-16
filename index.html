@@ -2771,8 +2771,10 @@ function viewDashboard(){
   // Inquiries/Costing don't exist in Marketing's menu at all, so the
   // personal snapshot only makes sense for Sales and Business Development,
   // the two departments that actually run this workflow. It's always about
-  // you specifically, so it shows regardless of which toggle is picked.
-  const mine = ["Sales","Business Development"].includes(d) ? myQuotationSnapshot() : "";
+  // the signed-in person specifically, so an admin browsing a department
+  // they don't personally work in never has anything to show here — skip
+  // it for them rather than display a permanently-empty section.
+  const mine = (!isAdmin() && ["Sales","Business Development"].includes(d)) ? myQuotationSnapshot() : "";
   return toggle + mine + fn(scope);
 }
 /* How long a sent quotation has been waiting, and what to do about it —
@@ -3689,7 +3691,7 @@ function viewPerformance(){
     <div class="kpi"><div class="lbl">Monthly commission</div><div class="val mono">${rate?shortMoney(commission):"—"}</div>
       <div class="foot">${rate?`${rate}% of won revenue`:"No rate set — ask your admin"}</div></div>
     <div class="kpi"><div class="lbl">Ranking</div><div class="val">${myRank?`#${myRank}`:"—"}</div>
-      <div class="foot">${board.length?`of ${board.length} in ${esc(state.profile.department)}`:"Nobody ranked yet"}</div></div>
+      <div class="foot">${board.length?`of ${board.length} ${isAdmin()?"company-wide":"in "+esc(state.profile.department)}`:"Nobody ranked yet"}</div></div>
   </div>
 
   <div class="grid" style="grid-template-columns:1fr 1fr">
@@ -4021,9 +4023,9 @@ function viewBDDashboard(scope="dept"){
   // filter either way. Activities are shared department-wide for Calendar
   // viewing regardless of tier, so it also needs an explicit narrow-down
   // for the personal view, the same way the Task list does.
-  const accts = rows("accounts").filter(a=> mgr ? effectiveDept(a)===state.profile.department : a.ownerId===uid);
+  const accts = rows("accounts").filter(a=> mgr ? effectiveDept(a)===actingDept() : a.ownerId===uid);
   const deals = mgr ? rows("deals") : rows("deals").filter(d=>d.ownerId===uid);
-  const acts  = mgr ? rows("activities").filter(a=>effectiveDept(a)===state.profile.department)
+  const acts  = mgr ? rows("activities").filter(a=>effectiveDept(a)===actingDept())
                     : rows("activities").filter(a=>a.ownerId===uid);
   const ms = monthStart();
   const active = accts.filter(a=>a.type==="Active");
