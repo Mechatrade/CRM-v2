@@ -1451,9 +1451,14 @@ const rows = c => {
   if (SHARED_COLLECTIONS.includes(c)) return all;      // one registry for everyone
   if (!state.workspace || state.workspace === "Admin") return all;
   // Records owned by an administrator belong to no single department, so they
-  // stay visible in every workspace rather than disappearing.
-  return all.filter(d => d.department === state.workspace
-                      || d.department === "Admin" || !d.department);
+  // stay visible in every workspace rather than disappearing. Department is
+  // resolved via effectiveDept() rather than trusting the record's own
+  // stored field directly, since that field is set once at save time and
+  // can go stale if its owner's role/department changes afterward.
+  return all.filter(d => {
+    const dept = effectiveDept(d);
+    return dept === state.workspace || dept === "Admin" || !dept;
+  });
 };
 
 function money(n){
