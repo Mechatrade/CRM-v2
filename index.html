@@ -983,11 +983,17 @@ const ROLES = {
   admin:             { label:"Administrator",                dept:"Admin",                 tier:"admin"   },
   sales_officer:     { label:"Sales Officer",                 dept:"Sales",                 tier:"manager" },
   sales_person:      { label:"Sales Person",                  dept:"Sales",                 tier:"staff"   },
+  procurement_staff: { label:"Procurement Staff",             dept:"Sales",                 tier:"staff"   },
   bd_manager:        { label:"Business Development Manager",  dept:"Business Development",  tier:"manager" },
   bd_officer:        { label:"Business Development Officer",  dept:"Business Development",  tier:"staff"   },
   marketing_manager: { label:"Marketing Manager",             dept:"Marketing",             tier:"manager" },
   marketing_officer: { label:"Marketing Officer",             dept:"Marketing",             tier:"staff"   }
 };
+// Customer/Lead Inquiry, Product Costing, Quotations, Follow-ups — the one
+// role that sees every Sales-department record here, not just its own.
+// Nothing outside these 4 modules is affected; Procurement Staff is
+// otherwise a normal staff-tier role like Sales Person.
+const PROCUREMENT_COLLECTIONS = ["inquiries","costing","quotations","followups"];
 const DEPTS = ["Sales","Business Development","Marketing","Admin"];
 const DEPT_CLASS = { "Sales":"accent", "Business Development":"info", "Marketing":"warn", "Admin":"" };
 /* Quotation numbering: MTISI-<department code>-<mmyy>-<series>.
@@ -1927,6 +1933,11 @@ function scopeQueries(col){
   // anything raised against a customer you manage, whoever created it
   qs.push(query(base, where("accountManagerId","==", myUid())));
   if (col === "deals") qs.push(query(base, where("sourcedBy","==", myUid())));
+  // Procurement Staff: every Sales-department record, but only in these 4
+  // Sales & Quotation Management modules — same broad reach a manager gets,
+  // scoped narrowly to just this slice instead of the whole department.
+  if (state.profile.role === "procurement_staff" && PROCUREMENT_COLLECTIONS.includes(col))
+    qs.push(query(base, where("department","==","Sales")));
   return qs;
 }
 
@@ -2331,13 +2342,16 @@ function renderLinks(v){
    full form — and therefore can't accidentally alter the figures. */
 /* Mirrors the security rules exactly, so the interface never offers an
    edit the database will refuse. */
-function canWrite(d){
+function canWrite(d, col){
   if (!d) return false;
   if (isAdmin()) return true;
   if (d.ownerId === myUid() || d.createdBy === myUid()) return true;
   if (d.accountManagerId === myUid()) return true;        // you hold the customer
   if (isManager() && d.department === state.profile.department)
     return state.settings.managerEdit !== false;          // set in Settings
+  // Procurement Staff: every Sales record, but only in these 4 modules.
+  if (col && state.profile.role === "procurement_staff"
+      && PROCUREMENT_COLLECTIONS.includes(col) && d.department === "Sales") return true;
   return false;
 }
 const canEditRecord = canWrite;
@@ -2943,12 +2957,12 @@ function viewList(col){
       ${list.map(d=>`<tr>
         ${cols.map((c,i)=>`<td class="${["money","number"].includes(c.type)?"num":""}">${
           i===0 ? `<span class="lnk" data-open="${col}:${d.id}">${esc(titleOf(col,d))}</span>`
-          : (["status","stage"].includes(c.k) && c.opts && canWrite(d)) ? statusSelect(col, d, c.opts)
-          : (col==="accounts" && ["type","priority"].includes(c.k) && c.opts && canWrite(d)) ? inlineFieldSelect(col, d, c)
+          : (["status","stage"].includes(c.k) && c.opts && canWrite(d, col)) ? statusSelect(col, d, c.opts)
+          : (col==="accounts" && ["type","priority"].includes(c.k) && c.opts && canWrite(d, col)) ? inlineFieldSelect(col, d, c)
           : cell(col,c,d)
         }</td>`).join("")}
         <td class="row-act">
-          ${canWrite(d) ? `
+          ${canWrite(d, col) ? `
             ${col==="leads" && d.status==="Qualified" ? `<button class="btn sm" data-convert="${d.id}">Convert</button> `:""}
             ${col==="activities" && d.status!=="Completed" ? `<button class="btn sm" data-donebtn="${d.id}">Done</button> `:""}
             ${col==="inquiries" ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
@@ -3746,7 +3760,7 @@ function viewFiltered(routeKey){
     <tbody>${list.map(d=>`<tr>
       ${cols.map((c,i)=>`<td class="${["money","number"].includes(c.type)?"num":""}">${
         i===0 ? `<span class="lnk" data-open="${col}:${d.id}">${esc(titleOf(col,d))}</span>` : cell(col,c,d)}</td>`).join("")}
-      <td class="row-act">${canWrite(d) ? `<button class="btn sm" data-edit="${col}:${d.id}">Edit</button>`
+      <td class="row-act">${canWrite(d, col) ? `<button class="btn sm" data-edit="${col}:${d.id}">Edit</button>`
         : `<span class="pill" title="${esc(readOnlyNote(d))}">${esc(initials(userName(d.ownerId)))}</span>`}</td>
     </tr>`).join("")}</tbody></table></div>`
     : `<div class="empty"><strong>Nothing in ${esc(tab[1].toLowerCase())}</strong>
@@ -5139,7 +5153,7 @@ function openForm(col, id, preset){
   const S = SCHEMAS[col]; if(!S) return;
   if (id){
     const existing = state.data[col].get(id);
-    if (existing && !canWrite(existing)) return toast(readOnlyNote(existing), true);
+    if (existing && !canWrite(existing, col)) return toast(readOnlyNote(existing), true);
   }
   const d = id ? { ...state.data[col].get(id), ...(preset||{}) } : (preset||{});
   modal(`
@@ -5515,11 +5529,11 @@ function openDetail(col,id){
     </div>
     <div class="modal-f">
       ${col==="leads" && d.status==="Qualified" ? `<button class="btn" id="conv">Convert to customer</button>`:""}
-      ${col==="activities" && d.nextAction && canWrite(d) ? `<button class="btn" id="follow-task">Create follow-up task</button>`:""}
+      ${col==="activities" && d.nextAction && canWrite(d, col) ? `<button class="btn" id="follow-task">Create follow-up task</button>`:""}
       <div class="spacer"></div>
-      ${canWrite(d) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
+      ${canWrite(d, col) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
       <button class="btn" data-close>Close</button>
-      ${canWrite(d) ? `<button class="btn pri" id="editme">Edit</button>` : ""}
+      ${canWrite(d, col) ? `<button class="btn pri" id="editme">Edit</button>` : ""}
     </div>`, true);
 
   const em = document.querySelector("#editme");
@@ -6040,7 +6054,7 @@ function iqSupplierBlock(s, idx, items, itemLowest){
 function openInquiryForm(id, preset){
   if (id){
     const existing = state.data.inquiries.get(id);
-    if (existing && !canWrite(existing)) return toast(readOnlyNote(existing), true);
+    if (existing && !canWrite(existing, "inquiries")) return toast(readOnlyNote(existing), true);
   }
   const d = id ? { ...state.data.inquiries.get(id) } : { ...(preset || {}) };
   let nextLineId = 1, nextSupId = 1;
@@ -6541,11 +6555,11 @@ function openInquiryDetail(id){
     <div class="modal-f">
       <button class="btn" id="iq-view">Preview document</button>
       <button class="btn" id="iq-print">Print</button>
-      ${canWrite(d) ? `<button class="btn" id="iq-to-costing">Create Product Costing</button>` : ""}
+      ${canWrite(d, "inquiries") ? `<button class="btn" id="iq-to-costing">Create Product Costing</button>` : ""}
       <div class="spacer"></div>
-      ${canWrite(d) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
+      ${canWrite(d, "inquiries") ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
       <button class="btn" data-close>Close</button>
-      ${canWrite(d) ? `<button class="btn pri" id="iq-edit">Edit</button>` : ""}
+      ${canWrite(d, "inquiries") ? `<button class="btn pri" id="iq-edit">Edit</button>` : ""}
     </div>`, true);
   const em = document.querySelector("#iq-edit");
   if (em) em.onclick = ()=>{ closeModal(true); openInquiryForm(id); };
@@ -6559,7 +6573,7 @@ function openInquiryDetail(id){
 function openCostingForm(id, preset){
   if (id){
     const existing = state.data.costing.get(id);
-    if (existing && !canWrite(existing)) return toast(readOnlyNote(existing), true);
+    if (existing && !canWrite(existing, "costing")) return toast(readOnlyNote(existing), true);
   }
   const d = id ? { ...state.data.costing.get(id) } : { ...(preset || {}) };
   let items = Array.isArray(d.items) && d.items.length ? d.items.map(i=>({...i})) : [{desc:"",qty:1,price:""}];
@@ -7062,11 +7076,11 @@ function openCostingDetail(id){
     </div>
     <div class="modal-f">
       <button class="btn" id="co-preview-detail" type="button">Preview</button>
-      ${d.status==="Approved" && canWrite(d) ? `<button class="btn" id="co-to-quote">Create Quotation</button>` : ""}
+      ${d.status==="Approved" && canWrite(d, "costing") ? `<button class="btn" id="co-to-quote">Create Quotation</button>` : ""}
       <div class="spacer"></div>
-      ${canWrite(d) ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
+      ${canWrite(d, "costing") ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
       <button class="btn" data-close>Close</button>
-      ${canWrite(d) ? `<button class="btn pri" id="co-edit">Edit</button>` : ""}
+      ${canWrite(d, "costing") ? `<button class="btn pri" id="co-edit">Edit</button>` : ""}
     </div>`, true);
   const em = document.querySelector("#co-edit");
   if (em) em.onclick = ()=>{ closeModal(true); openCostingForm(id); };
@@ -7078,7 +7092,7 @@ function openCostingDetail(id){
 function openQuoteForm(id, preset){
   if (id){
     const existing = state.data.quotations.get(id);
-    if (existing && !canWrite(existing)) return toast(readOnlyNote(existing), true);
+    if (existing && !canWrite(existing, "quotations")) return toast(readOnlyNote(existing), true);
   }
   // A quote number is issued by the server so two people can never be handed
   // the same one. That check is the one thing here that needs a connection.
