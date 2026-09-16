@@ -903,7 +903,7 @@ select option, select optgroup{ background:var(--opt-bg); color:var(--opt-text);
     </div>
     <nav class="nav" id="nav"></nav>
     <div class="rail-foot">
-      <div class="me">
+      <div class="me" id="me-click" style="cursor:pointer" title="Change your password">
         <div class="av" id="me-av">--</div>
         <div style="min-width:0">
           <div class="nm" id="me-name">—</div>
@@ -947,7 +947,8 @@ select option, select optgroup{ background:var(--opt-bg); color:var(--opt-text);
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
-  createUserWithEmailAndPassword
+  createUserWithEmailAndPassword, updatePassword,
+  reauthenticateWithCredential, EmailAuthProvider
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
@@ -1010,23 +1011,20 @@ try{
 /*    tier 'staff'   = sees only records they own                      */
 /*    tier 'manager' = sees every record in their department           */
 /*    tier 'admin'   = sees everything + manages the team              */
-/*    To demote Sales Officer to staff, change its tier below.         */
+/*    To promote a Supervisor to manager-tier, change its tier below.  */
 /* ------------------------------------------------------------------ */
 const ROLES = {
-  admin:             { label:"Administrator",                dept:"Admin",                 tier:"admin"   },
-  sales_officer:     { label:"Sales Officer",                 dept:"Sales",                 tier:"manager" },
-  sales_person:      { label:"Sales Person",                  dept:"Sales",                 tier:"staff"   },
-  procurement_staff: { label:"Procurement Staff",             dept:"Sales",                 tier:"staff"   },
-  bd_manager:        { label:"Business Development Manager",  dept:"Business Development",  tier:"manager" },
-  bd_officer:        { label:"Business Development Officer",  dept:"Business Development",  tier:"staff"   },
-  marketing_manager: { label:"Marketing Manager",             dept:"Marketing",             tier:"manager" },
-  marketing_officer: { label:"Marketing Officer",             dept:"Marketing",             tier:"staff"   }
+  admin:                 { label:"Administrator",                dept:"Admin",                 tier:"admin"   },
+  procurement_manager:   { label:"Procurement Manager",           dept:"Sales",                 tier:"manager" },
+  procurement_supervisor:{ label:"Procurement Supervisor",        dept:"Sales",                 tier:"manager" },
+  procurement_officer:   { label:"Procurement Officer",           dept:"Sales",                 tier:"staff"   },
+  bd_manager:            { label:"Business Development Manager",  dept:"Business Development",  tier:"manager" },
+  bd_supervisor:         { label:"Business Development SV",       dept:"Business Development",  tier:"manager" },
+  bd_officer:            { label:"Business Development Officer",  dept:"Business Development",  tier:"staff"   },
+  marketing_manager:     { label:"Marketing Manager",             dept:"Marketing",             tier:"manager" },
+  marketing_supervisor:  { label:"Marketing Supervisor",          dept:"Marketing",             tier:"manager" },
+  marketing_officer:     { label:"Marketing Officer",             dept:"Marketing",             tier:"staff"   }
 };
-// Customer/Lead Inquiry, Product Costing, Quotations, Follow-ups — the one
-// role that sees every Sales-department record here, not just its own.
-// Nothing outside these 4 modules is affected; Procurement Staff is
-// otherwise a normal staff-tier role like Sales Person.
-const PROCUREMENT_COLLECTIONS = ["inquiries","costing","quotations","followups"];
 const DEPTS = ["Sales","Business Development","Marketing","Admin"];
 const DEPT_CLASS = { "Sales":"accent", "Business Development":"info", "Marketing":"warn", "Admin":"" };
 /* Quotation numbering: MTISI-<department code>-<mmyy>-<series>.
@@ -1907,7 +1905,7 @@ onAuthStateChanged(auth, async (u)=>{
   }
   const p = snap.data();
   if (p.active === false){ await signOut(auth); toast("That account has been deactivated.", true); return; }
-  const role = ROLES[p.role] ? p.role : "sales_person";
+  const role = ROLES[p.role] ? p.role : "procurement_officer";
   state.profile = { ...p, uid:u.uid, role, tier:ROLES[role].tier, department:p.department || ROLES[role].dept };
   $("#gate").classList.add("hidden"); $("#noprofile").classList.add("hidden");
   $("#app").classList.remove("hidden");
@@ -1952,6 +1950,55 @@ function paintMe(){
   $("#me-role").textContent = ROLES[p.role].label;
   $("#me-av").textContent = initials(p.displayName || p.loginName || emailToLoginName(state.user.email));
   $("#brand-dept").textContent = p.department;
+  $("#me-click").onclick = openChangePasswordModal;
+}
+/* Changing your OWN password is the one thing Firebase's client SDK can
+   do without a backend — an admin resetting someone ELSE's forgotten
+   password still can't work this way (see Team → reissuing an account),
+   but this lets anyone swap out a temporary password for their own,
+   anytime, right after signing in. */
+function openChangePasswordModal(){
+  modal(`
+    <div class="modal-h"><h3>Change your password</h3><button class="x" data-close aria-label="Close">×</button></div>
+    <div class="modal-b">
+      <div id="form-err" class="err hidden"></div>
+      <div class="fgrid">
+        <div class="field full"><label for="pw-cur">Current password <span class="req">*</span></label>
+          <input id="pw-cur" type="password" autocomplete="current-password"></div>
+        <div class="field full"><label for="pw-new">New password <span class="req">*</span></label>
+          <input id="pw-new" type="password" autocomplete="new-password" placeholder="At least 6 characters"></div>
+        <div class="field full"><label for="pw-new2">Confirm new password <span class="req">*</span></label>
+          <input id="pw-new2" type="password" autocomplete="new-password"></div>
+      </div>
+    </div>
+    <div class="modal-f"><div class="spacer"></div>
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn pri" id="pw-save">Change password</button>
+    </div>`, true);
+
+  $("#pw-save").onclick = async ()=>{
+    const box = $("#form-err");
+    const cur = $("#pw-cur").value, nw = $("#pw-new").value, nw2 = $("#pw-new2").value;
+    if (!cur || !nw || !nw2){ box.textContent = "Fill in all three fields."; box.classList.remove("hidden"); return; }
+    if (nw.length < 6){ box.textContent = "New password needs at least 6 characters."; box.classList.remove("hidden"); return; }
+    if (nw !== nw2){ box.textContent = "New password and confirmation don't match."; box.classList.remove("hidden"); return; }
+    $("#pw-save").disabled = true;
+    try{
+      const cred = EmailAuthProvider.credential(state.user.email, cur);
+      await reauthenticateWithCredential(auth.currentUser, cred);
+      await updatePassword(auth.currentUser, nw);
+      closeModal(true); toast("Password changed");
+    }catch(e){
+      $("#pw-save").disabled = false;
+      box.textContent = ({
+        "auth/wrong-password":"Your current password is incorrect.",
+        "auth/invalid-credential":"Your current password is incorrect.",
+        "auth/too-many-requests":"Too many attempts. Wait a few minutes and try again.",
+        "auth/weak-password":"Use a longer password — at least 6 characters."
+      })[e.code] || e.message;
+      box.classList.remove("hidden");
+    }
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1976,11 +2023,6 @@ function scopeQueries(col){
   // anything raised against a customer you manage, whoever created it
   qs.push(query(base, where("accountManagerId","==", myUid())));
   if (col === "deals") qs.push(query(base, where("sourcedBy","==", myUid())));
-  // Procurement Staff: every Sales-department record, but only in these 4
-  // Sales & Quotation Management modules — same broad reach a manager gets,
-  // scoped narrowly to just this slice instead of the whole department.
-  if (state.profile.role === "procurement_staff" && PROCUREMENT_COLLECTIONS.includes(col))
-    qs.push(query(base, where("department","==","Sales")));
   return qs;
 }
 
@@ -2392,9 +2434,6 @@ function canWrite(d, col){
   if (d.accountManagerId === myUid()) return true;        // you hold the customer
   if (isManager() && d.department === state.profile.department)
     return state.settings.managerEdit !== false;          // set in Settings
-  // Procurement Staff: every Sales record, but only in these 4 modules.
-  if (col && state.profile.role === "procurement_staff"
-      && PROCUREMENT_COLLECTIONS.includes(col) && d.department === "Sales") return true;
   return false;
 }
 const canEditRecord = canWrite;
@@ -4472,7 +4511,7 @@ function viewTeam(){
       </td>
     </tr>`).join("")}</tbody>
   </table></div></div>
-  <p class="note" style="margin-top:10px">Forgot a password? Accounts use a Login Name, not a real email, so there's no reset link to send. Deactivate their account here, then add them again with the same Login Name and a new password — they're back in within a minute.</p>`;
+  <p class="note" style="margin-top:10px">Anyone can change their own password anytime — click your name at the bottom of the sidebar once signed in. For a genuinely forgotten password: accounts use a Login Name, not a real email, so there's no reset link to send — deactivate their account here, then add them again with the same Login Name and a new password.</p>`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -8577,7 +8616,7 @@ function openUserForm(uid){
           ${uid?`<span class="hint">Login Name can't be changed here.</span>`:`<span class="hint">Letters, numbers, dots, dashes, underscores — 3-30 characters. This is what they'll type to sign in, not an email.</span>`}</div>
         ${uid?"":`<div class="field full"><label for="u-pass">Temporary password <span class="req">*</span></label>
           <input id="u-pass" type="text" value="Mechatrade${Math.floor(1000+Math.random()*9000)}!">
-          <span class="hint">Share this once — they can change it after signing in, under their profile.</span></div>`}
+          <span class="hint">Share this once — they can change it themselves after signing in (click their name in the sidebar).</span></div>`}
         <div class="field"><label for="u-role">Role <span class="req">*</span></label>
           <select id="u-role">${Object.entries(ROLES).map(([k,r])=>
             `<option value="${k}"${u?.role===k?" selected":""}>${esc(r.label)}</option>`).join("")}</select></div>
