@@ -838,13 +838,13 @@ select option, select optgroup{ background:var(--opt-bg); color:var(--opt-text);
       <button class="back" id="portal-back">← Change workspace</button>
       <div class="portal-chip" id="portal-chip"><i></i><span></span></div>
       <h2>Sign in</h2>
-      <p class="lead">Use the work email your administrator set up.</p>
+      <p class="lead">Use the Login Name your administrator set up.</p>
       <div id="gate-err" class="err hidden"></div>
-      <div class="field"><label for="g-email">Email</label><input id="g-email" type="email" autocomplete="username" placeholder="you@mechatrade.com"></div>
+      <div class="field"><label for="g-email">Login Name</label><input id="g-email" type="text" autocomplete="username" placeholder="juan.delacruz"></div>
       <div class="field"><label for="g-pass">Password</label><input id="g-pass" type="password" autocomplete="current-password" placeholder="••••••••"></div>
       <button id="g-go" class="btn pri">Sign in</button>
       <div class="divider"></div>
-      <p class="fine">Forgot your password? Ask your administrator to reset it in the Team screen.</p>
+      <p class="fine">Forgot your password? Ask your administrator — they can set you up with a new one in the Team screen.</p>
       <p class="fine hidden" id="bootstrap-link-wrap">
         <a href="#" id="bootstrap-link">No administrator yet? Create the first admin account →</a>
       </p>
@@ -859,7 +859,7 @@ select option, select optgroup{ background:var(--opt-bg); color:var(--opt-text);
       <p class="lead">This only works once — the very first account made this way becomes the administrator. After that, use Team to add everyone else.</p>
       <div id="bootstrap-err" class="err hidden"></div>
       <div class="field"><label for="b-name">Your name</label><input id="b-name" type="text" autocomplete="name" placeholder="Juan Dela Cruz"></div>
-      <div class="field"><label for="b-email">Email</label><input id="b-email" type="email" autocomplete="username" placeholder="you@mechatrade.com"></div>
+      <div class="field"><label for="b-email">Login Name</label><input id="b-email" type="text" autocomplete="username" placeholder="juan.delacruz"></div>
       <div class="field"><label for="b-pass">Password</label><input id="b-pass" type="password" autocomplete="new-password" placeholder="At least 6 characters"></div>
       <button id="b-go" class="btn pri">Create admin account</button>
     </div>
@@ -935,7 +935,7 @@ select option, select optgroup{ background:var(--opt-bg); color:var(--opt-text);
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
-  createUserWithEmailAndPassword, sendPasswordResetEmail
+  createUserWithEmailAndPassword
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
@@ -958,6 +958,27 @@ const firebaseConfig = {
 
 const app  = initializeApp(firebaseConfig);
 const auth = getAuth(app);
+/* ------------------------------------------------------------------ */
+/* Login Names, not email addresses.                                   */
+/* Firebase Auth's email/password provider genuinely needs something   */
+/* shaped like an email behind the scenes, so a Login Name is quietly  */
+/* turned into name@LOGIN_DOMAIN before ever touching the Auth SDK.    */
+/* Nobody types, sees, or is emailed anything at that domain — it's    */
+/* not a real, deliverable address. See loginNameToEmail() below.      */
+/* ------------------------------------------------------------------ */
+const LOGIN_DOMAIN = "mechatrade-crm.internal";
+const LOGIN_NAME_RE = /^[a-zA-Z0-9._-]{3,30}$/;
+function isValidLoginName(name){ return LOGIN_NAME_RE.test(String(name||"").trim()); }
+function loginNameToEmail(name){
+  const v = String(name||"").trim().toLowerCase();
+  // Accounts made before this change used a real email as their Auth
+  // identifier — if what's typed already looks like one, use it exactly
+  // as-is rather than appending the synthetic domain on top of it, so
+  // existing people keep signing in with what they already know.
+  if (v.includes("@")) return v;
+  return `${v}@${LOGIN_DOMAIN}`;
+}
+function emailToLoginName(email){ return String(email||"").split("@")[0] || ""; }
 
 /* Everything is kept in the browser's own database, so the app works with no
    signal and anything typed offline is sent the moment a connection returns.
@@ -1753,23 +1774,23 @@ document.querySelectorAll("[data-portal]").forEach(b=>
 $("#portal-back").onclick = ()=>{ $("#gate-err").classList.add("hidden"); showPortalPick(); };
 
 $("#g-go").onclick = async ()=>{
-  const email = $("#g-email").value.trim(), pass = $("#g-pass").value;
+  const loginName = $("#g-email").value.trim(), pass = $("#g-pass").value;
   const err = $("#gate-err");
   err.classList.add("hidden");
-  if(!email || !pass){ err.textContent="Enter your email and password."; err.classList.remove("hidden"); return; }
+  if(!loginName || !pass){ err.textContent="Enter your Login Name and password."; err.classList.remove("hidden"); return; }
   $("#g-go").disabled = true; $("#g-go").textContent = "Signing in…";
   try{
-    await signInWithEmailAndPassword(auth, email, pass);
+    await signInWithEmailAndPassword(auth, loginNameToEmail(loginName), pass);
   }catch(e){
     err.textContent = (!navigator.onLine
       ? "You're offline. Signing in for the first time on this device needs a connection — "
         + "once you're signed in, the app keeps working without one."
       : null) || ({
-      "auth/invalid-credential":"That email and password don't match an account.",
-      "auth/user-not-found":"No account uses that email.",
+      "auth/invalid-credential":"That Login Name and password don't match an account.",
+      "auth/user-not-found":"No account uses that Login Name.",
       "auth/wrong-password":"That password is incorrect.",
       "auth/too-many-requests":"Too many attempts. Wait a few minutes and try again.",
-      "auth/invalid-email":"That email address isn't valid.",
+      "auth/invalid-email":"That Login Name isn't valid.",
       "auth/network-request-failed":"No connection. Try again when you have signal."
     })[e.code] || e.message;
     err.classList.remove("hidden");
@@ -1806,13 +1827,15 @@ $("#bootstrap-back").onclick = ()=>{
 };
 
 $("#b-go").onclick = async ()=>{
-  const name = $("#b-name").value.trim(), email = $("#b-email").value.trim(), pass = $("#b-pass").value;
+  const name = $("#b-name").value.trim(), loginName = $("#b-email").value.trim(), pass = $("#b-pass").value;
   const err = $("#bootstrap-err");
   err.classList.add("hidden");
-  if (!name || !email || !pass){ err.textContent = "Fill in your name, email, and a password."; err.classList.remove("hidden"); return; }
+  if (!name || !loginName || !pass){ err.textContent = "Fill in your name, Login Name, and a password."; err.classList.remove("hidden"); return; }
+  if (!isValidLoginName(loginName)){ err.textContent = "Login Name: 3-30 characters, letters/numbers/dots/dashes/underscores only."; err.classList.remove("hidden"); return; }
   if (pass.length < 6){ err.textContent = "Password needs to be at least 6 characters."; err.classList.remove("hidden"); return; }
   $("#b-go").disabled = true; $("#b-go").textContent = "Creating…";
   let cred;
+  const email = loginNameToEmail(loginName);
   try{
     cred = await createUserWithEmailAndPassword(auth, email, pass);
     await runTransaction(db, async tx=>{
@@ -1820,7 +1843,7 @@ $("#b-go").onclick = async ()=>{
       const bsnap = await tx.get(bref);
       if (bsnap.exists()) throw new Error("already-bootstrapped");
       tx.set(doc(db,"users",cred.user.uid), {
-        displayName: name, email, role:"admin", department:"Admin", active:true,
+        displayName: name, email, loginName, role:"admin", department:"Admin", active:true,
         createdAt: serverTimestamp()
       });
       tx.set(bref, { adminCreated:true, adminUid:cred.user.uid, createdAt: serverTimestamp() });
@@ -1832,8 +1855,8 @@ $("#b-go").onclick = async ()=>{
     if (cred) try{ await signOut(auth); }catch{}
     err.textContent = e.message === "already-bootstrapped"
       ? "An admin account already exists — ask them to add you from Team instead."
-      : (e.code === "auth/email-already-in-use" ? "That email is already in use — sign in instead."
-        : e.code === "auth/invalid-email" ? "That email address isn't valid."
+      : (e.code === "auth/email-already-in-use" ? "That Login Name is already taken — sign in instead, or pick another."
+        : e.code === "auth/invalid-email" ? "That Login Name isn't valid."
         : e.message);
     err.classList.remove("hidden");
     $("#bootstrap-link-wrap").classList.add("hidden");
@@ -1905,9 +1928,9 @@ function paintWorkspace(){
 
 function paintMe(){
   const p = state.profile;
-  $("#me-name").textContent = p.displayName || state.user.email;
+  $("#me-name").textContent = p.displayName || p.loginName || emailToLoginName(state.user.email);
   $("#me-role").textContent = ROLES[p.role].label;
-  $("#me-av").textContent = initials(p.displayName || state.user.email);
+  $("#me-av").textContent = initials(p.displayName || p.loginName || emailToLoginName(state.user.email));
   $("#brand-dept").textContent = p.department;
 }
 
@@ -1993,7 +2016,7 @@ function syncStats(){
     const mine = Array.from(state.data.deals.values()).filter(d=>d.ownerId===myUid());
     const won = wonThisMonth(mine).reduce((s,d)=>s+Number(d.value||0),0);
     const payload = {
-      displayName: state.profile.displayName || state.user.email,
+      displayName: state.profile.displayName || state.profile.loginName || emailToLoginName(state.user.email),
       department: state.profile.department, month,
       won, deals: wonThisMonth(mine).length,
       target: Number(state.profile.monthlyTarget||0) || null
@@ -2406,7 +2429,7 @@ function personCell(uid){
   const u = state.users.get(uid);
   if (!u) return esc(userName(uid));
   const role = ROLES[u.role]?.label || u.role;
-  return `<div>${esc(u.displayName || u.email)}</div>
+  return `<div>${esc(u.displayName || u.loginName || emailToLoginName(u.email))}</div>
     <div style="font-size:11px;color:var(--muted);margin-top:1px">
       <span class="pill ${DEPT_CLASS[u.department]||""}" style="font-size:10px;padding:1px 6px">${esc(role)}</span>
     </div>`;
@@ -2580,7 +2603,7 @@ function openGlobalSearch(term){
 function ownerOptions(sel){
   const list = Array.from(state.users.values()).filter(u=>u.active !== false)
     .sort((a,b)=>(a.displayName||"").localeCompare(b.displayName||""));
-  return list.map(u=>`<option value="${u.id}"${u.id===sel?" selected":""}>${esc(u.displayName||u.email)} — ${esc(ROLES[u.role]?.label||u.role)}</option>`).join("");
+  return list.map(u=>`<option value="${u.id}"${u.id===sel?" selected":""}>${esc(u.displayName||u.loginName||emailToLoginName(u.email))} — ${esc(ROLES[u.role]?.label||u.role)}</option>`).join("");
 }
 
 /* ------------------------------------------------------------------ */
@@ -4417,7 +4440,7 @@ function viewTeam(){
     <thead><tr><th>Name</th><th>Role</th><th>Department</th><th>Sees</th>
       <th style="text-align:right">Monthly target</th><th style="text-align:right">Comm.</th><th>Status</th><th style="text-align:right">·</th></tr></thead>
     <tbody>${list.map(u=>`<tr>
-      <td><strong>${esc(u.displayName||"—")}</strong><div style="font-size:11.5px;color:var(--muted)">${esc(u.email||"")}</div></td>
+      <td><strong>${esc(u.displayName||"—")}</strong><div style="font-size:11.5px;color:var(--muted)">${esc(u.loginName || emailToLoginName(u.email))}</div></td>
       <td>${esc(ROLES[u.role]?.label || u.role)}</td>
       <td><span class="pill ${DEPT_CLASS[u.department]||""}">${esc(u.department||"—")}</span></td>
       <td style="font-size:12px;color:var(--muted)">${ ({admin:"Everything",manager:"Whole department",staff:"Own records"})[ROLES[u.role]?.tier] || "—" }</td>
@@ -4425,11 +4448,11 @@ function viewTeam(){
       <td class="num">${u.commissionRate?u.commissionRate+"%":"—"}</td>
       <td>${u.active===false?`<span class="pill alert">Inactive</span>`:`<span class="pill accent">Active</span>`}</td>
       <td class="row-act">
-        <button class="btn sm" data-reset="${esc(u.email||"")}">Reset password</button>
         <button class="btn sm" data-user="${u.id}">Edit</button>
       </td>
     </tr>`).join("")}</tbody>
-  </table></div></div>`;
+  </table></div></div>
+  <p class="note" style="margin-top:10px">Forgot a password? Accounts use a Login Name, not a real email, so there's no reset link to send. Deactivate their account here, then add them again with the same Login Name and a new password — they're back in within a minute.</p>`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -4577,11 +4600,6 @@ function wireView(){
     proceedRecord(col,pid);
   });
   v.querySelectorAll("[data-user]").forEach(el=> el.onclick = ()=> openUserForm(el.dataset.user));
-  v.querySelectorAll("[data-reset]").forEach(el=> el.onclick = async ()=>{
-    const em = el.dataset.reset; if(!em) return;
-    try{ await sendPasswordResetEmail(auth, em); toast("Reset link sent to "+em); }
-    catch(e){ toast(e.message,true); }
-  });
   v.querySelectorAll("[data-setfield]").forEach(el=>{
     el.onclick = e=> e.stopPropagation();
     el.onchange = async ()=>{
@@ -8534,12 +8552,12 @@ function openUserForm(uid){
       <div class="fgrid">
         <div class="field"><label for="u-name">Full name <span class="req">*</span></label>
           <input id="u-name" value="${esc(u?.displayName||"")}"></div>
-        <div class="field"><label for="u-email">Work email <span class="req">*</span></label>
-          <input id="u-email" type="email" value="${esc(u?.email||"")}"${uid?" disabled":""}>
-          ${uid?`<span class="hint">Email can't be changed here.</span>`:""}</div>
+        <div class="field"><label for="u-email">Login Name <span class="req">*</span></label>
+          <input id="u-email" type="text" value="${esc(u?.loginName || emailToLoginName(u?.email)||"")}"${uid?" disabled":""} placeholder="juan.delacruz">
+          ${uid?`<span class="hint">Login Name can't be changed here.</span>`:`<span class="hint">Letters, numbers, dots, dashes, underscores — 3-30 characters. This is what they'll type to sign in, not an email.</span>`}</div>
         ${uid?"":`<div class="field full"><label for="u-pass">Temporary password <span class="req">*</span></label>
           <input id="u-pass" type="text" value="Mechatrade${Math.floor(1000+Math.random()*9000)}!">
-          <span class="hint">Share this once. They can change it via Reset password.</span></div>`}
+          <span class="hint">Share this once — they can change it after signing in, under their profile.</span></div>`}
         <div class="field"><label for="u-role">Role <span class="req">*</span></label>
           <select id="u-role">${Object.entries(ROLES).map(([k,r])=>
             `<option value="${k}"${u?.role===k?" selected":""}>${esc(r.label)}</option>`).join("")}</select></div>
@@ -8567,11 +8585,13 @@ function openUserForm(uid){
 
   $("#u-save").onclick = async ()=>{
     const name = $("#u-name").value.trim();
-    const email = uid ? u.email : $("#u-email").value.trim();
+    const loginName = uid ? (u.loginName || emailToLoginName(u.email)) : $("#u-email").value.trim();
     const box = $("#form-err");
-    if(!name || !email){ box.textContent="Name and email are both needed."; box.classList.remove("hidden"); return; }
+    if(!name || !loginName){ box.textContent="Name and Login Name are both needed."; box.classList.remove("hidden"); return; }
+    if(!uid && !isValidLoginName(loginName)){ box.textContent="Login Name: 3-30 characters, letters/numbers/dots/dashes/underscores only."; box.classList.remove("hidden"); return; }
+    const email = loginNameToEmail(loginName);
     const profile = {
-      displayName:name, email, role:$("#u-role").value, department:$("#u-dept").value,
+      displayName:name, email, loginName, role:$("#u-role").value, department:$("#u-dept").value,
       monthlyTarget: Number($("#u-target").value||0) || null,
       commissionRate: Number($("#u-comm").value||0) || null,
       active: $("#u-active").value === "true", updatedAt: serverTimestamp()
@@ -8593,7 +8613,7 @@ function openUserForm(uid){
     }catch(e){
       $("#u-save").disabled = false;
       box.textContent = ({
-        "auth/email-already-in-use":"That email already has an account.",
+        "auth/email-already-in-use":"That Login Name is already taken.",
         "auth/weak-password":"Use a longer password — at least 6 characters."
       })[e.code] || e.message;
       box.classList.remove("hidden");
