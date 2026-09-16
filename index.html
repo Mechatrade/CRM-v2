@@ -1529,6 +1529,15 @@ function lastMonths(n){
   }
   return out;
 }
+/* A record's own stored `department` can go stale — it's set once, from
+   its owner's department at the time it was saved, and doesn't auto-update
+   if that person's role/department changes afterward. Dashboard views that
+   group or filter by department fall back to the owner's *current*
+   department when the two disagree, so a record never silently drops out
+   of view just because it predates a role reassignment. */
+function effectiveDept(r){
+  return state.users.get(r.ownerId)?.department || r.department || null;
+}
 /* ---- Product Costing: shared maths ----
    Pure functions over a stored costing doc (or the live form's draft state)
    so the same numbers show up whether it's being edited, viewed, or handed
@@ -2867,6 +2876,7 @@ function myQuotationSnapshot(){
 function viewAdminOverview(){
   const depts = ["Sales","Business Development","Marketing"];
   const deals = rows("deals"), leads = rows("leads");
+  const inquiries = rows("inquiries"), quotes = rows("quotations"), costing = rows("costing");
   const ms = monthStart();
   const wonAll = wonThisMonth(deals);
   const wonAllVal = wonAll.reduce((s,d)=>s+Number(d.value||0),0);
@@ -2876,30 +2886,53 @@ function viewAdminOverview(){
   const overdueAll = rows("activities").filter(a=>a.status!=="Completed"
     && daysUntil(a.dueDate)!==null && daysUntil(a.dueDate)<0);
 
+  // The Inquiry → Costing → Quotation pipeline — Sales/Procurement's
+  // primary workflow, entirely separate from the Deals/Leads funnel above
+  // (a Quotation being Approved does sync its linked Deal to Won, so these
+  // two trends are kept as separate charts rather than summed together,
+  // which would double-count that overlap).
+  const openInquiries = inquiries.filter(i=>i.status==="Open");
+  const pendingQuotes = quotes.filter(q=>["Sent","Viewed"].includes(q.status));
+  const wonQuotesMonth = quotes.filter(q=>q.status==="Approved" && toDate(q.approvedAt) >= ms);
+  const wonQuoteVal = wonQuotesMonth.reduce((s,q)=>s+Number(q.total||0),0);
+  const pendingCosting = costing.filter(c=>c.status==="Submitted for Approval");
+
   const byDept = depts.map(dept=>{
-    const dDeals = deals.filter(d=>d.department===dept);
+    const dDeals = deals.filter(d=>effectiveDept(d)===dept);
     const dOpen = dDeals.filter(d=>OPEN_STAGES.includes(d.stage));
     const dWon = wonThisMonth(dDeals);
-    const dLeads = leads.filter(l=>l.department===dept);
+    const dLeads = leads.filter(l=>effectiveDept(l)===dept);
+    const dInquiries = inquiries.filter(i=>effectiveDept(i)===dept);
+    const dQuotes = quotes.filter(q=>effectiveDept(q)===dept);
+    const dPendingQuotes = dQuotes.filter(q=>["Sent","Viewed"].includes(q.status));
+    const dWonQuotes = dQuotes.filter(q=>q.status==="Approved" && toDate(q.approvedAt) >= ms);
     const headcount = Array.from(state.users.values()).filter(u=>u.department===dept && u.active!==false).length;
     return {
       dept,
       wonVal: dWon.reduce((s,d)=>s+Number(d.value||0),0), wonCount: dWon.length,
       pipeline: dOpen.reduce((s,d)=>s+Number(d.value||0),0), openCount: dOpen.length,
-      leadsCount: dLeads.length, headcount
+      leadsCount: dLeads.length, headcount,
+      openInquiries: dInquiries.filter(i=>i.status==="Open").length,
+      pendingQuotes: dPendingQuotes.length,
+      wonQuoteVal: dWonQuotes.reduce((s,q)=>s+Number(q.total||0),0), wonQuoteCount: dWonQuotes.length
     };
   });
 
-  const trend = lastMonths(6).map(m=>({
+  const dealsTrend = lastMonths(6).map(m=>({
     label: m.label,
     value: deals.filter(d=>d.stage==="Won" && toDate(d.closedAt||d.updatedAt)>=m.from && toDate(d.closedAt||d.updatedAt)<m.to)
                 .reduce((s,d)=>s+Number(d.value||0),0)
+  }));
+  const quoteTrend = lastMonths(6).map(m=>({
+    label: m.label,
+    value: quotes.filter(q=>q.status==="Approved" && toDate(q.approvedAt)>=m.from && toDate(q.approvedAt)<m.to)
+                 .reduce((s,q)=>s+Number(q.total||0),0)
   }));
 
   return `
   <div class="eyebrow" style="margin-bottom:8px">Company-wide overview</div>
   <div class="kpis">
-    <div class="kpi accent"><div class="lbl">Won this month</div><div class="val mono">${shortMoney(wonAllVal)}</div>
+    <div class="kpi accent"><div class="lbl">Deals won this month</div><div class="val mono">${shortMoney(wonAllVal)}</div>
       <div class="foot">${wonAll.length} deal${wonAll.length===1?"":"s"} across every department</div></div>
     <div class="kpi"><div class="lbl">Open pipeline</div><div class="val mono">${shortMoney(pipelineAll)}</div>
       <div class="foot">${openAll.length} open deals</div></div>
@@ -2908,8 +2941,22 @@ function viewAdminOverview(){
     <div class="kpi ${overdueAll.length?"bad":""}"><div class="lbl">Overdue follow-ups</div>
       <div class="val">${overdueAll.length}</div><div class="foot">across every department</div></div>
   </div>
+  <div class="eyebrow" style="margin:16px 0 8px">Inquiry → Costing → Quotation</div>
+  <div class="kpis">
+    <div class="kpi accent"><div class="lbl">Quotations won this month</div><div class="val mono">${shortMoney(wonQuoteVal)}</div>
+      <div class="foot">${wonQuotesMonth.length} approved</div></div>
+    <div class="kpi ${pendingQuotes.length?"warn":""}"><div class="lbl">Pending quotations</div><div class="val">${pendingQuotes.length}</div>
+      <div class="foot">sent, awaiting a decision</div></div>
+    <div class="kpi"><div class="lbl">Open inquiries</div><div class="val">${openInquiries.length}</div>
+      <div class="foot">awaiting a first look</div></div>
+    <div class="kpi ${pendingCosting.length?"warn":""}"><div class="lbl">Costing pending approval</div><div class="val">${pendingCosting.length}</div>
+      <div class="foot">across every department</div></div>
+  </div>
 
-  ${chartCard("Revenue trend", "won deals · last 6 months, all departments", trend)}
+  <div class="grid" style="grid-template-columns:1fr 1fr">
+    ${chartCard("Deals revenue trend", "won deals · last 6 months, all departments", dealsTrend)}
+    ${chartCard("Quotations revenue trend", "approved quotations · last 6 months, all departments", quoteTrend, {color:"var(--info)"})}
+  </div>
 
   <div class="grid" style="grid-template-columns:repeat(3,1fr);margin-top:14px">
     ${byDept.map(d=>`
@@ -2917,10 +2964,14 @@ function viewAdminOverview(){
       <div class="card-h"><h3>${esc(d.dept)}</h3><div class="spacer"></div>
         <button class="btn sm" data-open-dept="${esc(d.dept)}">Open</button></div>
       <div class="kpis" style="grid-template-columns:1fr 1fr">
-        <div class="kpi accent"><div class="lbl">Won this month</div><div class="val mono">${shortMoney(d.wonVal)}</div>
-          <div class="foot">${d.wonCount} deal${d.wonCount===1?"":"s"}</div></div>
+        <div class="kpi accent"><div class="lbl">Deals won</div><div class="val mono">${shortMoney(d.wonVal)}</div>
+          <div class="foot">${d.wonCount} this month</div></div>
         <div class="kpi"><div class="lbl">Open pipeline</div><div class="val mono">${shortMoney(d.pipeline)}</div>
           <div class="foot">${d.openCount} open</div></div>
+        <div class="kpi accent"><div class="lbl">Quotes won</div><div class="val mono">${shortMoney(d.wonQuoteVal)}</div>
+          <div class="foot">${d.wonQuoteCount} this month</div></div>
+        <div class="kpi ${d.pendingQuotes?"warn":""}"><div class="lbl">Pending quotes</div><div class="val">${d.pendingQuotes}</div>
+          <div class="foot">${d.openInquiries} open inquir${d.openInquiries===1?"y":"ies"}</div></div>
       </div>
       <div style="display:flex;justify-content:space-between;margin-top:10px;font-size:12px;color:var(--muted)">
         <span>${d.leadsCount} lead${d.leadsCount===1?"":"s"}</span>
@@ -3965,9 +4016,9 @@ function viewBDDashboard(scope="dept"){
   // filter either way. Activities are shared department-wide for Calendar
   // viewing regardless of tier, so it also needs an explicit narrow-down
   // for the personal view, the same way the Task list does.
-  const accts = rows("accounts").filter(a=> mgr ? a.department===state.profile.department : a.ownerId===uid);
+  const accts = rows("accounts").filter(a=> mgr ? effectiveDept(a)===state.profile.department : a.ownerId===uid);
   const deals = mgr ? rows("deals") : rows("deals").filter(d=>d.ownerId===uid);
-  const acts  = mgr ? rows("activities").filter(a=>a.department===state.profile.department)
+  const acts  = mgr ? rows("activities").filter(a=>effectiveDept(a)===state.profile.department)
                     : rows("activities").filter(a=>a.ownerId===uid);
   const ms = monthStart();
   const active = accts.filter(a=>a.type==="Active");
