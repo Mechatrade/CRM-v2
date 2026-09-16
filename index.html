@@ -1543,6 +1543,36 @@ function lastMonths(n){
 function effectiveDept(r){
   return state.users.get(r.ownerId)?.department || r.department || null;
 }
+/* One-time repair: walks every department-bearing collection and corrects
+   any record whose stored department doesn't match its owner's *current*
+   department (see effectiveDept() above for why this drifts). Unlike
+   effectiveDept()'s dashboard-side fallback — which only helps where the
+   full dataset already reached the browser (admin views, shared
+   collections) — this actually rewrites the stored field, which is the
+   only fix that helps a real Manager/Supervisor's own Firestore query,
+   since that query is scoped by department at the database level and a
+   stale field there means the record never even reaches their browser.
+   Admin-only; intentionally leaves updatedAt untouched so this bulk
+   cleanup doesn't masquerade as a real edit in anyone's activity history. */
+async function repairDepartments(){
+  const COLS = ["leads","deals","activities","campaigns","quotations","content",
+                "assets","costing","followups","salesorders","inquiries","intel",
+                "accounts","contacts"];
+  let checked = 0, fixed = 0, skipped = 0;
+  for (const col of COLS){
+    for (const r of rows(col)){
+      checked++;
+      const correct = state.users.get(r.ownerId)?.department;
+      if (!correct){ skipped++; continue; }         // owner not found/no dept on file — leave alone
+      if (r.department === correct) continue;        // already correct
+      try{
+        await updateDoc(doc(db,col,r.id), { department: correct });
+        fixed++;
+      }catch(e){ console.warn("repair dept", col, r.id, e); skipped++; }
+    }
+  }
+  return { checked, fixed, skipped };
+}
 /* ---- Product Costing: shared maths ----
    Pure functions over a stored costing doc (or the live form's draft state)
    so the same numbers show up whether it's being edited, viewed, or handed
@@ -4807,6 +4837,17 @@ function viewSettings(){
         <span class="hint">${esc(L.h)} One per line.</span>
       </div>`).join("")}
     </div>
+  </div>
+
+  <div class="eyebrow" style="margin:24px 0 8px">Data repair</div>
+  <div class="card" style="max-width:760px;padding:18px 20px">
+    <p class="note" style="margin:0 0 12px">A record's department is set once, from its owner's department at the
+      time it was saved — it doesn't update automatically afterward if that person's role changes. If a
+      Manager/Supervisor can't see something they should (a lead, a deal, a costing sheet…), this is almost always
+      why. Running this checks every record's department against its current owner's department and corrects any
+      that don't match — a one-time cleanup, safe to run any time, and does nothing to records that are already correct.</p>
+    <button class="btn" id="repair-depts">Repair department fields</button>
+    <span id="repair-result" style="margin-left:10px;font-size:12.5px;color:var(--muted)"></span>
   </div>`;
 }
 
@@ -5040,6 +5081,16 @@ function wireView(){
     f.day = f.day === d ? null : d; render();
   });
   const ss = v.querySelector("#save-settings"); if (ss) ss.onclick = saveSettings;
+  const rd = v.querySelector("#repair-depts"); if (rd) rd.onclick = async ()=>{
+    rd.disabled = true; rd.textContent = "Repairing…";
+    const out = v.querySelector("#repair-result");
+    try{
+      const { checked, fixed, skipped } = await repairDepartments();
+      if (out) out.textContent = `Checked ${checked} record${checked===1?"":"s"} — fixed ${fixed}${skipped?`, skipped ${skipped} (no owner on file)`:""}.`;
+      toast(fixed ? `Repaired ${fixed} record${fixed===1?"":"s"}.` : "Everything already checks out — nothing to fix.");
+    }catch(e){ toast(e.message, true); }
+    rd.disabled = false; rd.textContent = "Repair department fields";
+  };
   v.querySelectorAll("[data-fixseries]").forEach(el=> el.onclick = ()=> repairSeries(el.dataset.fixseries));
   v.querySelectorAll(".seriesnext").forEach(el=> el.onchange = ()=> setSeriesNext(el.dataset.key, el.value));
 
