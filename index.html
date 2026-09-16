@@ -564,6 +564,14 @@ table.previewtbl tr.rowbad td{background:var(--alert-weak)}
 }
 .field textarea{min-height:74px;resize:vertical}
 .field .hint{font-size:11px;color:var(--faint)}
+.pwrap{position:relative}
+.pwrap input{padding-right:40px}
+.pwtoggle{
+  position:absolute;right:4px;top:50%;transform:translateY(-50%);
+  background:none;border:none;cursor:pointer;padding:6px 8px;
+  font-size:13px;color:var(--muted);line-height:1;
+}
+.pwtoggle:hover{color:var(--text)}
 .field .guide-note{
   margin-top:6px;padding:8px 10px;border-radius:8px;
   background:var(--accent-weak);border:1px solid var(--accent);
@@ -841,7 +849,9 @@ select option, select optgroup{ background:var(--opt-bg); color:var(--opt-text);
       <p class="lead">Use the Login Name your administrator set up.</p>
       <div id="gate-err" class="err hidden"></div>
       <div class="field"><label for="g-email">Login Name</label><input id="g-email" type="text" autocomplete="username" placeholder="juan.delacruz"></div>
-      <div class="field"><label for="g-pass">Password</label><input id="g-pass" type="password" autocomplete="current-password" placeholder="••••••••"></div>
+      <div class="field"><label for="g-pass">Password</label>
+        <div class="pwrap"><input id="g-pass" type="password" autocomplete="current-password" placeholder="••••••••">
+          <button type="button" class="pwtoggle" data-pwtoggle="g-pass" aria-label="Show password">👁</button></div></div>
       <button id="g-go" class="btn pri">Sign in</button>
       <div class="divider"></div>
       <p class="fine">Forgot your password? Ask your administrator — they can set you up with a new one in the Team screen.</p>
@@ -860,7 +870,9 @@ select option, select optgroup{ background:var(--opt-bg); color:var(--opt-text);
       <div id="bootstrap-err" class="err hidden"></div>
       <div class="field"><label for="b-name">Your name</label><input id="b-name" type="text" autocomplete="name" placeholder="Juan Dela Cruz"></div>
       <div class="field"><label for="b-email">Login Name</label><input id="b-email" type="text" autocomplete="username" placeholder="juan.delacruz"></div>
-      <div class="field"><label for="b-pass">Password</label><input id="b-pass" type="password" autocomplete="new-password" placeholder="At least 6 characters"></div>
+      <div class="field"><label for="b-pass">Password</label>
+        <div class="pwrap"><input id="b-pass" type="password" autocomplete="new-password" placeholder="At least 6 characters">
+          <button type="button" class="pwtoggle" data-pwtoggle="b-pass" aria-label="Show password">👁</button></div></div>
       <button id="b-go" class="btn pri">Create admin account</button>
     </div>
   </div>
@@ -1798,6 +1810,14 @@ $("#g-go").onclick = async ()=>{
   $("#g-go").disabled = false; $("#g-go").textContent = "Sign in";
 };
 $("#g-pass").addEventListener("keydown", e=>{ if(e.key==="Enter") $("#g-go").click(); });
+document.querySelectorAll("[data-pwtoggle]").forEach(btn=> btn.onclick = ()=>{
+  const input = document.getElementById(btn.dataset.pwtoggle);
+  if (!input) return;
+  const show = input.type === "password";
+  input.type = show ? "text" : "password";
+  btn.textContent = show ? "🙈" : "👁";
+  btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+});
 window.__signOut = ()=> signOut(auth);
 
 /* ---- first-admin bootstrap ----
