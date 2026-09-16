@@ -2132,8 +2132,10 @@ const SHARED_COLLECTIONS = ["accounts","products","suppliers"];
 // roles that need the same visibility (Procurement Officer, Sales
 // Operations Specialist) up to par in these specific Sales & Quotation
 // Management modules, without granting them a manager's full department
-// reach or approval rights.
-const SALES_OPS_COLLECTIONS = ["inquiries","costing","quotations","followups"];
+// reach or approval rights. Deals is included specifically so approving a
+// Quotation can move its linked Deal to Won even when they didn't create
+// that Deal themselves — not for browsing the pipeline generally.
+const SALES_OPS_COLLECTIONS = ["inquiries","costing","quotations","followups","deals"];
 function isSalesOpsStaff(){ return ["procurement_officer","sales_operations_specialist"].includes(state.profile?.role); }
 function scopeQueries(col){
   const base = collection(db, col);
@@ -2587,7 +2589,12 @@ function statusSelect(col, d, opts){
   // selectable even when gated, so an already-decided record still shows
   // correctly and can be pulled back to Draft for a revision.
   const gated = { costing:["Approved","Rejected"], quotations:["Approved","Declined"] }[col];
-  if (gated && !isManager() && !isAdmin()){
+  // Quotation approve/decline is also open to Sales Operations Specialist
+  // specifically — they run the customer relationship end-to-end and are
+  // the one who actually knows the outcome. Costing stays Manager/Admin
+  // only, untouched.
+  const salesOpsCanDecide = col === "quotations" && state.profile?.role === "sales_operations_specialist";
+  if (gated && !isManager() && !isAdmin() && !salesOpsCanDecide){
     opts = opts.filter(o=> !gated.includes(o) || o===now);
   }
   const tone = ({ "Draft":"", "Sent":"info", "Viewed":"warn", "Approved":"accent",
