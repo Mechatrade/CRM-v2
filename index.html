@@ -3421,19 +3421,23 @@ function openSalesOrderConvertPreview(quotationId){
         <tbody>${(inquiry.items||[]).map((it,i)=>`<tr>
           <td style="padding:7px 6px">${esc(itemFullLabel(it,i))}</td>
           <td class="num" style="padding:7px 6px">${esc(it.qty ?? "—")}</td>
-          <td style="padding:7px 6px">${esc(inquiryWinnerName(inquiry,i))}</td>
+          <td style="padding:7px 6px">${supplierLinkHTML(inquiryWinnerName(inquiry,i))}</td>
         </tr>`).join("")}</tbody>
       </table>` : `<p style="font-size:12.5px;color:var(--muted)">No linked Inquiry found for this quotation's Control No. — proceeding without that trail.</p>`}
 
       <div class="card-h" style="padding-left:0;padding-right:0;margin-top:18px"><h3>Costing per supplier (Approved)</h3></div>
-      ${costingSheets.length ? costingSheets.map(c=>`
+      ${costingSheets.length ? costingSheets.map(c=>{
+        const cat = findSupplierRecord(c.supplierName);
+        return `
         <div style="border:1px solid var(--line-2);border-radius:8px;padding:12px 14px;margin-bottom:10px">
           <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
-            <strong style="font-size:13px">${esc(c.supplierName||"Supplier")}</strong>
+            <strong style="font-size:13px">${supplierLinkHTML(c.supplierName)}</strong>
             <span class="pill">${esc(c.purchaseType||"—")}</span>
           </div>
           <div style="font-size:11.5px;color:var(--muted);margin-top:2px">
-            ${[c.supplierContact, c.supplierEmail].filter(Boolean).map(esc).join(" · ") || "No contact on file"}
+            ${[cat?.contactPerson||c.supplierContact, cat?.email||c.supplierEmail, cat?.phone].filter(Boolean).map(esc).join(" · ") || "No contact on file"}
+            ${cat?.address ? `<div>${esc(cat.address)}</div>` : ""}
+            ${!cat ? `<div style="font-style:italic">Not found in the Suppliers catalog — check the name matches exactly.</div>` : ""}
           </div>
           <table class="items" style="margin-top:8px">
             <thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit cost</th></tr></thead>
@@ -3443,7 +3447,7 @@ function openSalesOrderConvertPreview(quotationId){
               <td class="num" style="padding:6px">${money(it.price)}</td>
             </tr>`).join("")}</tbody>
           </table>
-        </div>`).join("")
+        </div>`;}).join("")
         : `<p style="font-size:12.5px;color:var(--muted)">No Approved costing sheet found sharing this Control No.</p>`}
 
       <div class="card-h" style="padding-left:0;padding-right:0;margin-top:18px"><h3>Quotation items</h3></div>
@@ -3467,23 +3471,58 @@ function openSalesOrderConvertPreview(quotationId){
     </div>`, true);
 
   const chain = { inquiry, costingSheets, account, contact };
+  wireModalOpens($("#modal-root"));
   $("#so-doc-preview").onclick = ()=> openSalesOrderPreview(buildSalesOrderSnapshot(q, chain));
   $("#so-confirm").onclick = ()=> convertQuoteToSalesOrder(q, chain);
+}
+/* Matches a Costing sheet's free-text supplier name against the actual
+   Supplier catalog (Suppliers menu) — same name-matching the catalog
+   auto-population already relies on elsewhere in the app. */
+function findSupplierRecord(name){
+  const norm = String(name||"").trim().toLowerCase();
+  if (!norm) return null;
+  return rows("suppliers").find(s => String(s.name||"").trim().toLowerCase() === norm) || null;
+}
+/* A supplier name as a clickable jump straight to their record in the
+   Suppliers menu when we can match one, plain text otherwise (e.g. an
+   in-house/no-supplier item, or a name that doesn't match the catalog).
+   Pass a stored supplierId when a snapshot already has one (avoids a
+   re-lookup, and still works if the catalog name changes later); falls
+   back to a live name-match otherwise. */
+function supplierLinkHTML(name, knownId){
+  if (!name || name === "—") return esc(name || "—");
+  const id = knownId || findSupplierRecord(name)?.id;
+  return id ? `<span class="lnk" data-open="suppliers:${id}">${esc(name)}</span>` : esc(name);
 }
 /* Shared by the pre-conversion "Preview document" button and the actual
    save, so what you see before confirming is exactly what gets written —
    no separate code path that could quietly drift out of sync. */
 function buildSalesOrderSnapshot(q, chain){
   const { inquiry, costingSheets, account, contact } = chain;
-  const items = (q.items||[]).map((it,i)=>({
-    desc: it.desc||"", qty: it.qty||0, price: it.price||0,
-    supplierName: inquiry ? inquiryWinnerName(inquiry, i) : (costingSheets[0]?.supplierName || null)
-  }));
-  const suppliers = costingSheets.map(c=>({
-    name: c.supplierName||null, contact: c.supplierContact||null, email: c.supplierEmail||null,
-    purchaseType: c.purchaseType||null,
-    total: (c.items||[]).reduce((s,it)=>s+Number(it.qty||0)*Number(it.price||0),0)
-  }));
+  const items = (q.items||[]).map((it,i)=>{
+    const supplierName = inquiry ? inquiryWinnerName(inquiry, i) : (costingSheets[0]?.supplierName || null);
+    return {
+      desc: it.desc||"", qty: it.qty||0, price: it.price||0,
+      supplierName, supplierId: findSupplierRecord(supplierName)?.id || null
+    };
+  });
+  const suppliers = costingSheets.map(c=>{
+    const cat = findSupplierRecord(c.supplierName);
+    return {
+      name: c.supplierName||null,
+      // The catalog record (Suppliers menu) is the source of truth for
+      // contact info where it exists — what was typed on the Costing
+      // sheet is only the fallback, so this always points at the same
+      // supplier the team can look up and manage there.
+      supplierId: cat?.id || null,
+      contact: cat?.contactPerson || c.supplierContact || null,
+      email: cat?.email || c.supplierEmail || null,
+      phone: cat?.phone || null,
+      address: cat?.address || null,
+      purchaseType: c.purchaseType||null,
+      total: (c.items||[]).reduce((s,it)=>s+Number(it.qty||0)*Number(it.price||0),0)
+    };
+  });
   const billedTo = {
     name: account?.name||null, address: account?.address||null, city: account?.city||null,
     contactName: contact ? titleOf("contacts",contact) : null,
@@ -5382,6 +5421,14 @@ function closeModal(force){
   document.removeEventListener("keydown", escClose);
 }
 function escClose(e){ if (e.key === "Escape") closeModal(); }
+/* modal() only wires [data-close] on its own — anywhere a custom detail
+   view adds its own [data-open] cross-links (Suppliers, Quotations…),
+   this needs calling explicitly afterward to make them clickable. */
+function wireModalOpens(root){
+  root.querySelectorAll("[data-open]").forEach(el=> el.onclick = ()=>{
+    const [c,id] = el.dataset.open.split(":"); closeModal(true); openDetail(c,id);
+  });
+}
 
 function fieldHTML(col,f,d,isNew){
   if (f.type === "computed") return "";
@@ -5900,7 +5947,7 @@ function openSalesOrderDetail(id){
           <td style="padding:7px 6px">${descAppHTML(i.desc)}</td>
           <td class="num" style="padding:7px 6px">${i.qty}</td>
           <td class="num" style="padding:7px 6px">${money(i.price)}</td>
-          <td style="padding:7px 6px">${esc(i.supplierName||"—")}</td>
+          <td style="padding:7px 6px">${supplierLinkHTML(i.supplierName, i.supplierId)}</td>
         </tr>`).join("") : `<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:14px">No item snapshot on this order.</td></tr>`}</tbody>
       </table>
 
@@ -5908,9 +5955,11 @@ function openSalesOrderDetail(id){
         ${suppliers.map(s=>`
           <div style="border:1px solid var(--line-2);border-radius:8px;padding:10px 14px;margin-bottom:8px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
             <div>
-              <strong style="font-size:13px">${esc(s.name||"Supplier")}</strong>
+              <strong style="font-size:13px">${supplierLinkHTML(s.name, s.supplierId)}</strong>
               <div style="font-size:11.5px;color:var(--muted);margin-top:2px">
-                ${[s.contact, s.email].filter(Boolean).map(esc).join(" · ") || "No contact on file"}
+                ${[s.contact, s.email, s.phone].filter(Boolean).map(esc).join(" · ") || "No contact on file"}
+                ${s.address ? `<div>${esc(s.address)}</div>` : ""}
+                ${!s.supplierId ? `<div style="font-style:italic">Not found in the Suppliers catalog.</div>` : ""}
               </div>
             </div>
             <div style="text-align:right">
@@ -5927,6 +5976,7 @@ function openSalesOrderDetail(id){
       <button class="btn" data-close>Close</button>
       ${canWrite(d,"salesorders") ? `<button class="btn pri" id="so-edit">Edit</button>` : ""}
     </div>`, true);
+  wireModalOpens($("#modal-root"));
   $("#so-view").onclick = ()=> openSalesOrderPreview(d);
   $("#so-print").onclick = ()=> printSalesOrder(id);
   const editBtn = $("#so-edit");
