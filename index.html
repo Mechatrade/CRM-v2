@@ -3460,11 +3460,42 @@ function openSalesOrderConvertPreview(quotationId){
       <div class="totals"><div class="row grand"><span>Total</span><span>${money(q.total)}</span></div></div>
     </div>
     <div class="modal-f">
+      <button class="btn" id="so-doc-preview">Preview document</button>
+      <div class="spacer"></div>
       <button class="btn" data-close>Cancel</button>
       <button class="btn pri" id="so-confirm">Convert to Sales Order</button>
     </div>`, true);
 
-  $("#so-confirm").onclick = ()=> convertQuoteToSalesOrder(q, { inquiry, costingSheets, account, contact });
+  const chain = { inquiry, costingSheets, account, contact };
+  $("#so-doc-preview").onclick = ()=> openSalesOrderPreview(buildSalesOrderSnapshot(q, chain));
+  $("#so-confirm").onclick = ()=> convertQuoteToSalesOrder(q, chain);
+}
+/* Shared by the pre-conversion "Preview document" button and the actual
+   save, so what you see before confirming is exactly what gets written —
+   no separate code path that could quietly drift out of sync. */
+function buildSalesOrderSnapshot(q, chain){
+  const { inquiry, costingSheets, account, contact } = chain;
+  const items = (q.items||[]).map((it,i)=>({
+    desc: it.desc||"", qty: it.qty||0, price: it.price||0,
+    supplierName: inquiry ? inquiryWinnerName(inquiry, i) : (costingSheets[0]?.supplierName || null)
+  }));
+  const suppliers = costingSheets.map(c=>({
+    name: c.supplierName||null, contact: c.supplierContact||null, email: c.supplierEmail||null,
+    purchaseType: c.purchaseType||null,
+    total: (c.items||[]).reduce((s,it)=>s+Number(it.qty||0)*Number(it.price||0),0)
+  }));
+  const billedTo = {
+    name: account?.name||null, address: account?.address||null, city: account?.city||null,
+    contactName: contact ? titleOf("contacts",contact) : null,
+    phone: contact?.phone||account?.phone||null, email: contact?.email||null
+  };
+  return {
+    orderNo: q.quoteNo ? `SO-${q.quoteNo}` : `SO-${Date.now()}`,
+    controlNo: q.controlNo || null,
+    accountId: q.accountId || null, quotationId: q.id, dealId: q.dealId || null,
+    orderDate: todayISO(), total: Number(q.total || 0) || null, status:"Processing",
+    ownerId: q.ownerId, items, suppliers, billedTo
+  };
 }
 /* The actual write — a frozen snapshot of items, suppliers, and billing
    info as of conversion time, so the Sales Order still reads correctly
@@ -3472,30 +3503,12 @@ function openSalesOrderConvertPreview(quotationId){
 async function convertQuoteToSalesOrder(q, chain){
   if (q.ownerId !== myUid() && !isAdmin()) return toast("Only the quotation's own owner (or an admin) can convert it.", true);
   if (rows("salesorders").some(so=>so.quotationId===q.id)) return toast("Already converted.", true);
-  const { inquiry, costingSheets, account, contact } = chain;
   $("#so-confirm").disabled = true;
   try{
-    const items = (q.items||[]).map((it,i)=>({
-      desc: it.desc||"", qty: it.qty||0, price: it.price||0,
-      supplierName: inquiry ? inquiryWinnerName(inquiry, i) : (costingSheets[0]?.supplierName || null)
-    }));
-    const suppliers = costingSheets.map(c=>({
-      name: c.supplierName||null, contact: c.supplierContact||null, email: c.supplierEmail||null,
-      purchaseType: c.purchaseType||null,
-      total: (c.items||[]).reduce((s,it)=>s+Number(it.qty||0)*Number(it.price||0),0)
-    }));
-    const billedTo = {
-      name: account?.name||null, address: account?.address||null, city: account?.city||null,
-      contactName: contact ? titleOf("contacts",contact) : null,
-      phone: contact?.phone||account?.phone||null, email: contact?.email||null
-    };
+    const snapshot = buildSalesOrderSnapshot(q, chain);
     await addDoc(collection(db,"salesorders"), {
-      orderNo: q.quoteNo ? `SO-${q.quoteNo}` : `SO-${Date.now()}`,
-      controlNo: q.controlNo || null,
-      accountId: q.accountId || null, quotationId: q.id, dealId: q.dealId || null,
-      orderDate: todayISO(), total: Number(q.total || 0) || null, status:"Processing",
-      ownerId: q.ownerId, department: state.profile.department,
-      items, suppliers, billedTo,
+      ...snapshot,
+      department: state.profile.department,
       notes: `Converted from ${q.quoteNo || "quotation"} by ${state.profile.displayName||"—"}.`,
       createdAt: serverTimestamp(), createdBy: myUid(), updatedAt: serverTimestamp()
     });
@@ -5907,11 +5920,15 @@ function openSalesOrderDetail(id){
           </div>`).join("")}` : ""}
     </div>
     <div class="modal-f">
+      <button class="btn" id="so-view">Preview document</button>
+      <button class="btn" id="so-print">Print</button>
       ${canWrite(d,"salesorders") ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
       <div class="spacer"></div>
       <button class="btn" data-close>Close</button>
       ${canWrite(d,"salesorders") ? `<button class="btn pri" id="so-edit">Edit</button>` : ""}
     </div>`, true);
+  $("#so-view").onclick = ()=> openSalesOrderPreview(d);
+  $("#so-print").onclick = ()=> printSalesOrder(id);
   const editBtn = $("#so-edit");
   if (editBtn) editBtn.onclick = ()=>{ closeModal(true); openForm("salesorders", id); };
 }
@@ -8609,6 +8626,124 @@ function printQuoteDoc(q){
 function printQuote(id){
   const q = state.data.quotations.get(id);
   if (q) printQuoteDoc(q);
+}
+
+/* The Sales Order's own printable document — same letterhead and table
+   styling as the Quotation (reuses quoteDocCSS directly), but customer-
+   facing: which supplier we sourced from is our own internal information,
+   the same way a Quotation never shows our supplier cost, so that stays
+   in the app's detail view only, never on this printed copy. */
+function salesOrderDocHTML(so){
+  const st = state.settings;
+  const items = so.items || [];
+  const bt = so.billedTo || {};
+  const co = [st.companyAddress, st.companyPhone && "Tel: "+st.companyPhone,
+              st.companyEmail, st.companyWeb, st.companyTin && "TIN: "+st.companyTin]
+             .filter(Boolean).map(esc).join("<br>");
+  return `<div class="sheet">
+    <div class="lh">
+      <div>
+        <img src="${LOGO_PRINT}" alt="${esc(st.companyName||"")}">
+        <div class="co">${co || "&nbsp;"}</div>
+      </div>
+      <div class="dt">
+        <h1>SALES ORDER</h1>
+        <table>
+          <tr><td>Order no.</td><td class="r"><strong>${esc(so.orderNo||"—")}</strong></td></tr>
+          <tr><td>Order date</td><td class="r">${fmtDate(so.orderDate)}</td></tr>
+          ${so.deliveryDate ? `<tr><td>Delivery date</td><td class="r">${fmtDate(so.deliveryDate)}</td></tr>` : ""}
+          ${so.quotationId ? `<tr><td>Quote no.</td><td class="r">${esc(recordTitle("quotations",so.quotationId))}</td></tr>` : ""}
+        </table>
+      </div>
+    </div>
+
+    <div class="parties">
+      <div>
+        <div class="cap">Billed to</div>
+        <div class="who">${esc(bt.name || recordTitle("accounts",so.accountId) || "—")}</div>
+        ${bt.contactName?`<div>Attn: ${esc(bt.contactName)}</div>`:""}
+        ${bt.address?`<div>${esc(bt.address)}</div>`:""}
+        ${bt.city?`<div>${esc(bt.city)}</div>`:""}
+        ${bt.phone?`<div>Tel: ${esc(bt.phone)}</div>`:""}
+        ${bt.email?`<div>${esc(bt.email)}</div>`:""}
+      </div>
+      <div>
+        <div class="cap">Prepared by</div>
+        <div class="who">${esc(userName(so.ownerId) || "—")}</div>
+        <div>${esc(st.companyName || "")}</div>
+        ${st.companyEmail?`<div>${esc(st.companyEmail)}</div>`:""}
+      </div>
+    </div>
+
+    <table class="it">
+      <thead><tr>
+        <th style="width:34px" class="c">#</th><th>Description</th>
+        <th style="width:60px" class="c">Qty</th>
+        <th style="width:108px" class="r">Unit price</th>
+        <th style="width:118px" class="r">Amount</th>
+      </tr></thead>
+      <tbody>${items.length ? items.map((i,n)=>`<tr>
+        <td class="c">${n+1}</td>
+        <td>${descDocHTML(i.desc)}</td>
+        <td class="c">${i.qty}</td>
+        <td class="r">${money(i.price)}</td>
+        <td class="r">${money(Number(i.qty||0)*Number(i.price||0))}</td>
+      </tr>`).join("") : `<tr><td colspan="5" style="text-align:center;color:#8496A7;padding:22px">
+        No items on this order.</td></tr>`}</tbody>
+    </table>
+
+    <div class="tot">
+      <div class="g"><span>TOTAL</span><span>${money(so.total)}</span></div>
+    </div>
+
+    ${so.notes ? `<div class="blk">
+      <div class="cap">Notes</div>
+      <p>${esc(so.notes)}</p></div>` : ""}
+
+    <div class="sign">
+      <div><div class="cap">Prepared by</div>
+        <div class="line">${esc(userName(so.ownerId) || "")} — Signature over printed name</div></div>
+      <div><div class="cap">Conforme</div>
+        <div class="line">Signature over printed name / Date</div></div>
+    </div>
+
+    <div class="foot">${esc(st.companyName || "")}${st.companyWeb?" · "+esc(st.companyWeb):""}
+      ${st.companyPhone?" · "+esc(st.companyPhone):""}</div>
+  </div>`;
+}
+function openSalesOrderPreview(so){
+  const wrap = document.createElement("div");
+  wrap.className = "scrim preview-scrim";
+  wrap.innerHTML = `
+    <style>${quoteDocCSS()}</style>
+    <div class="preview-shell">
+      <div class="preview-bar">
+        <span class="eyebrow">Sales Order preview</span>
+        <div style="flex:1"></div>
+        <button class="btn sm" data-pp>Print</button>
+        <button class="btn sm" data-px>Close</button>
+      </div>
+      <div class="preview-page">${salesOrderDocHTML(so)}</div>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close = ()=> wrap.remove();
+  wrap.querySelector("[data-px]").onclick = close;
+  wrap.onclick = e=>{ if (e.target === wrap) close(); };
+  wrap.querySelector("[data-pp]").onclick = ()=> printSalesOrderDoc(so);
+}
+function printSalesOrderDoc(so){
+  const w = window.open("", "_blank", "width=900,height=1100");
+  if (!w){ toast("Allow pop-ups to print", true); return; }
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>${esc(so.orderNo||"Sales Order")}</title><style>
+    body{margin:0;background:#fff}${quoteDocCSS()}</style></head>
+    <body>${salesOrderDocHTML(so)}</body></html>`);
+  w.document.close();
+  setTimeout(()=>{ w.focus(); w.print(); }, 500);
+}
+function printSalesOrder(id){
+  const so = state.data.salesorders.get(id);
+  if (so) printSalesOrderDoc(so);
 }
 
 /* ====================================================================
