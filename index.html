@@ -6167,7 +6167,7 @@ function quoteTotals(items, discountPct, taxPct){
 }
 function itemRow(i, it={}){
   return `<tr data-row="${i}">
-    <td><textarea data-i="desc" rows="1" placeholder="Item or service&#10;Brand: …&#10;Model: …"
+    <td><textarea data-i="desc" rows="2" style="width:100%" placeholder="Item or service&#10;Brand: …&#10;Model: …"
       >${esc(it.desc||"")}</textarea></td>
     <td style="width:78px"><input data-i="qty" type="number" min="0" step="any" value="${esc(it.qty??1)}"></td>
     <td style="width:118px"><input data-i="price" type="number" min="0" step="any" value="${esc(it.price??"")}"></td>
@@ -7216,7 +7216,7 @@ function openCostingForm(id, preset){
 }
 function coItemRow(l){
   return `<tr data-id="${l._id}">
-    <td><input data-f="desc" value="${esc(l.desc||"")}" placeholder="What the supplier quoted"></td>
+    <td><textarea data-f="desc" rows="2" style="width:100%" placeholder="What the supplier quoted">${esc(l.desc||"")}</textarea></td>
     <td style="width:70px"><input data-f="qty" type="number" min="0" step="any" value="${esc(l.qty??1)}"></td>
     <td style="width:112px"><input data-f="price" type="number" min="0" step="any" value="${esc(l.price??"")}" placeholder="0.00"></td>
     <td style="width:112px;text-align:right;font-family:var(--mono);font-size:12.5px" data-out="fx"></td>
