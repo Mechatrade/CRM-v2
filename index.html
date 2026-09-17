@@ -3267,7 +3267,7 @@ function viewList(col){
             ${col==="activities" && d.status!=="Completed" ? `<button class="btn sm" data-donebtn="${d.id}">Done</button> `:""}
             ${col==="inquiries" ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
             ${col==="costing" && d.status==="Approved" ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
-            ${col==="quotations" && quoteStatus(d)==="Approved" && d.ownerId===myUid() && !rows("salesorders").some(so=>so.quotationId===d.id) ? `<button class="btn sm" data-convert-so="${d.id}">Convert</button> `:""}
+            ${col==="quotations" && quoteStatus(d)==="Approved" && (d.ownerId===myUid()||isAdmin()) && !rows("salesorders").some(so=>so.quotationId===d.id) ? `<button class="btn sm" data-convert-so="${d.id}">Convert</button> `:""}
             <button class="btn sm" data-edit="${col}:${d.id}">Edit</button>`
           : `<span class="pill" title="${esc(readOnlyNote(d))}">${esc(initials(userName(d.ownerId)))}</span>`}
         </td>
@@ -3393,7 +3393,7 @@ function inquiryWinnerName(inquiry, itemIdx){
 }
 function openSalesOrderConvertPreview(quotationId){
   const q = state.data.quotations.get(quotationId); if (!q) return;
-  if (q.ownerId !== myUid()){ toast("Only the quotation's own owner can convert it.", true); return; }
+  if (q.ownerId !== myUid() && !isAdmin()){ toast("Only the quotation's own owner (or an admin) can convert it.", true); return; }
   if (quoteStatus(q) !== "Approved"){ toast("Only an Approved quotation can be converted.", true); return; }
   if (rows("salesorders").some(so=>so.quotationId===q.id)){ toast("Already converted — see Sales Orders.", true); return; }
   const { inquiry, costingSheets, account, contact } = traceQuoteChain(q);
@@ -3470,7 +3470,7 @@ function openSalesOrderConvertPreview(quotationId){
    info as of conversion time, so the Sales Order still reads correctly
    even if the underlying Inquiry/Costing/Account records change later. */
 async function convertQuoteToSalesOrder(q, chain){
-  if (q.ownerId !== myUid()) return toast("Only the quotation's own owner can convert it.", true);
+  if (q.ownerId !== myUid() && !isAdmin()) return toast("Only the quotation's own owner (or an admin) can convert it.", true);
   if (rows("salesorders").some(so=>so.quotationId===q.id)) return toast("Already converted.", true);
   const { inquiry, costingSheets, account, contact } = chain;
   $("#so-confirm").disabled = true;
@@ -7970,7 +7970,7 @@ function openQuoteDetail(id){
     <div class="modal-f">
       <button class="btn" id="q-view">Preview document</button>
       <button class="btn" id="q-print">Print</button>
-      ${st==="Approved" && q.ownerId===myUid() && !rows("salesorders").some(so=>so.quotationId===q.id)
+      ${st==="Approved" && (q.ownerId===myUid()||isAdmin()) && !rows("salesorders").some(so=>so.quotationId===q.id)
         ? `<button class="btn" id="q-convert-so">Convert to Sales Order</button>` : ""}
       <div class="spacer"></div>
       <button class="btn" data-close>Close</button>
