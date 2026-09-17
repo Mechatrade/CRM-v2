@@ -5649,7 +5649,10 @@ function proceedRecord(col, id){
       const sup = suppliers[supIdx] || {};
       const costItems = items
         .map((it,idx)=> combo.itemWinners[idx]===supIdx
-          ? { desc: [it.itemCode, itemFullLabel(it, idx)].filter(Boolean).join(" — "), qty: it.qty||1, price: (it.costs||[])[supIdx] || "" }
+          // Brand, Model, and Description each on their own line — no item
+          // number prefix, since Costing/Quotation already number lines
+          // their own way.
+          ? { desc: [it.brand, it.model, (it.desc||"").trim()].filter(Boolean).join("\n"), qty: it.qty||1, price: (it.costs||[])[supIdx] || "" }
           : null)
         .filter(Boolean);
       return { sup, costItems };
@@ -5700,7 +5703,10 @@ function proceedRecord(col, id){
     }
     const items = siblings.flatMap(c=> costingItemQuotes(c));
     const first = siblings[0] || d;
-    const title = items.length===1 ? items[0].desc : `${items.length} items — ${d.controlNo}`;
+    // The Subject line needs one line, not the item's own multi-line
+    // Brand/Model/Description block — collapse it just for this purpose.
+    const oneLine = s => String(s||"").split("\n").filter(Boolean).join(" — ");
+    const title = items.length===1 ? oneLine(items[0].desc) : `${items.length} items — ${d.controlNo}`;
     openQuoteForm(null, {
       controlNo: d.controlNo || null, costingId: id,
       accountId: first.accountId || null, dealId: first.dealId || null,
@@ -6167,7 +6173,7 @@ function quoteTotals(items, discountPct, taxPct){
 }
 function itemRow(i, it={}){
   return `<tr data-row="${i}">
-    <td><textarea data-i="desc" rows="2" style="width:100%" placeholder="Item or service&#10;Brand: …&#10;Model: …"
+    <td><textarea data-i="desc" rows="3" style="width:100%;resize:vertical" placeholder="Item or service&#10;Brand: …&#10;Model: …"
       >${esc(it.desc||"")}</textarea></td>
     <td style="width:78px"><input data-i="qty" type="number" min="0" step="any" value="${esc(it.qty??1)}"></td>
     <td style="width:118px"><input data-i="price" type="number" min="0" step="any" value="${esc(it.price??"")}"></td>
@@ -7168,7 +7174,7 @@ function openCostingForm(id, preset){
       purchaseType: $("#co-type").value, supplierCurrency: $("#co-cur").value,
       conversionRate: Number($("#co-rate").value||0)||null,
       items: items2,
-      itemsSummary: items2[0].desc + (items2.length>1?` +${items2.length-1} more`:""),
+      itemsSummary: items2[0].desc.split("\n").filter(Boolean).join(" — ") + (items2.length>1?` +${items2.length-1} more`:""),
       telegraphicCharge: Number($("#co-tele").value||0)||null, telegraphicOverride: teleManuallySet,
       shippingCost: Number($("#co-ship").value||0)||null,
       freightCost: Number($("#co-freight").value||0)||null, deliveryFee: Number($("#co-deliv").value||0)||null,
@@ -7216,7 +7222,7 @@ function openCostingForm(id, preset){
 }
 function coItemRow(l){
   return `<tr data-id="${l._id}">
-    <td><textarea data-f="desc" rows="2" style="width:100%" placeholder="What the supplier quoted">${esc(l.desc||"")}</textarea></td>
+    <td><textarea data-f="desc" rows="3" style="width:100%;resize:vertical" placeholder="What the supplier quoted">${esc(l.desc||"")}</textarea></td>
     <td style="width:70px"><input data-f="qty" type="number" min="0" step="any" value="${esc(l.qty??1)}"></td>
     <td style="width:112px"><input data-f="price" type="number" min="0" step="any" value="${esc(l.price??"")}" placeholder="0.00"></td>
     <td style="width:112px;text-align:right;font-family:var(--mono);font-size:12.5px" data-out="fx"></td>
