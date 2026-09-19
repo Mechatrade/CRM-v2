@@ -1349,9 +1349,11 @@ const SCHEMAS = {
       { k:"accountId",     l:"Customer",         type:"ref",    refTo:"accounts", table:true },
       { k:"dealId",        l:"Opportunity",      type:"ref",    refTo:"deals" },
       { k:"supplierName",  l:"Supplier",         type:"text",   table:true },
+      { k:"supplierId",    l:"Supplier record",  type:"text",   system:true },
       { k:"supplierContact",l:"Contact person",  type:"text" },
       { k:"supplierEmail", l:"Email or phone",   type:"text" },
       { k:"supplierRef",   l:"Supplier quote ref.", type:"text" },
+      { k:"supplierPaymentTerms", l:"Payment terms", type:"text" },
       { k:"quoteValidUntil",l:"Quote valid until",type:"date" },
       { k:"purchaseType",  l:"Purchase type",    type:"select", opts:["International","Local"], def:"International" },
       { k:"supplierCurrency", l:"Supplier currency", type:"select", opts:["USD","CNY","EUR","JPY","SGD","KRW","TWD"], def:"USD" },
@@ -1423,11 +1425,13 @@ const SCHEMAS = {
   suppliers: {
     label:"Supplier", plural:"Suppliers", icon:"⬡", titleField:"name",
     fields:[
+      { k:"controlNo",       l:"Control No.",     type:"text",  table:true, system:true },
       { k:"name",            l:"Supplier name",   type:"text",  req:true, table:true },
       { k:"contactPerson",   l:"Contact person",  type:"text",  table:true },
       { k:"phone",           l:"Phone",           type:"tel",   table:true },
       { k:"email",           l:"Email",           type:"email", table:true },
       { k:"address",         l:"Address",         type:"text" },
+      { k:"paymentTerms",    l:"Payment terms",   type:"text", table:true },
       { k:"lastCanvassDate", l:"Last canvassed on", type:"date", table:true },
       { k:"ownerId",         l:"Owner",           type:"ref",   refTo:"users", table:true, assignOnly:true },
       { k:"notes",           l:"Notes",           type:"textarea", full:true }
@@ -3427,16 +3431,17 @@ function openSalesOrderConvertPreview(quotationId){
 
       <div class="card-h" style="padding-left:0;padding-right:0;margin-top:18px"><h3>Costing per supplier (Approved)</h3></div>
       ${costingSheets.length ? costingSheets.map(c=>{
-        const cat = findSupplierRecord(c.supplierName);
+        const cat = c.supplierId ? state.data.suppliers.get(c.supplierId) : findSupplierRecord(c.supplierName);
         return `
         <div style="border:1px solid var(--line-2);border-radius:8px;padding:12px 14px;margin-bottom:10px">
           <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
-            <strong style="font-size:13px">${supplierLinkHTML(c.supplierName)}</strong>
+            <strong style="font-size:13px">${supplierLinkHTML(c.supplierName, cat?.id)}</strong>
             <span class="pill">${esc(c.purchaseType||"—")}</span>
           </div>
           <div style="font-size:11.5px;color:var(--muted);margin-top:2px">
             ${[cat?.contactPerson||c.supplierContact, cat?.email||c.supplierEmail, cat?.phone].filter(Boolean).map(esc).join(" · ") || "No contact on file"}
             ${cat?.address ? `<div>${esc(cat.address)}</div>` : ""}
+            ${(cat?.paymentTerms||c.supplierPaymentTerms) ? `<div>Payment terms: ${esc(cat?.paymentTerms||c.supplierPaymentTerms)}</div>` : ""}
             ${!cat ? `<div style="font-style:italic">Not found in the Suppliers catalog — check the name matches exactly.</div>` : ""}
           </div>
           <table class="items" style="margin-top:8px">
@@ -3507,18 +3512,21 @@ function buildSalesOrderSnapshot(q, chain){
     };
   });
   const suppliers = costingSheets.map(c=>{
-    const cat = findSupplierRecord(c.supplierName);
+    // Prefer the direct reference Costing now carries; only fall back to
+    // name-matching for older sheets saved before that link existed.
+    const cat = c.supplierId ? state.data.suppliers.get(c.supplierId) : findSupplierRecord(c.supplierName);
     return {
       name: c.supplierName||null,
       // The catalog record (Suppliers menu) is the source of truth for
       // contact info where it exists — what was typed on the Costing
       // sheet is only the fallback, so this always points at the same
       // supplier the team can look up and manage there.
-      supplierId: cat?.id || null,
+      supplierId: cat?.id || c.supplierId || null,
       contact: cat?.contactPerson || c.supplierContact || null,
       email: cat?.email || c.supplierEmail || null,
       phone: cat?.phone || null,
       address: cat?.address || null,
+      paymentTerms: cat?.paymentTerms || c.supplierPaymentTerms || null,
       purchaseType: c.purchaseType||null,
       total: (c.items||[]).reduce((s,it)=>s+Number(it.qty||0)*Number(it.price||0),0)
     };
@@ -5636,13 +5644,15 @@ function controlNoSeriesOf(cn){
   const m = String(cn||"").match(/^(.*)-(\d+)$/);
   return m ? { key:m[1], no:Number(m[2]) } : null;
 }
-async function nextControlNo(dept){
+async function nextControlNo(dept, opts={}){
+  const series = opts.series || "CN";       // "CN" for Inquiries, "SUP" for Suppliers
+  const sourceCol = opts.sourceCol || "inquiries";
   const now = new Date();
-  const key = `CN-${QUOTE_PREFIX[dept] || "ADM"}-${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
-  // Self-heals if the counter ever drifted below what's already on an
-  // inquiry in this series (e.g. reset by hand) — never issues a number at
+  const key = `${series}-${QUOTE_PREFIX[dept] || "ADM"}-${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+  // Self-heals if the counter ever drifted below what's already on a
+  // record in this series (e.g. reset by hand) — never issues a number at
   // or below the highest one already in use.
-  const used = rows("inquiries").map(i=>controlNoSeriesOf(i.controlNo)).filter(x=>x && x.key===key).map(x=>x.no);
+  const used = rows(sourceCol).map(i=>controlNoSeriesOf(i.controlNo)).filter(x=>x && x.key===key).map(x=>x.no);
   const highestUsed = used.length ? Math.max(...used) : 0;
   let n = 1;
   await runTransaction(db, async tx=>{
@@ -5728,6 +5738,10 @@ async function submitForm(col,id){
   if (!id){
     payload.createdAt = serverTimestamp(); payload.createdBy = myUid();
     if (col==="deals") payload.stageChangedAt = serverTimestamp();
+    if (col==="suppliers"){
+      try{ payload.controlNo = await nextControlNo(payload.department, { series:"SUP", sourceCol:"suppliers" }); }
+      catch(e){ console.warn("supplier control no.", e); }
+    }
   } else if (col==="deals" && prev && prev.stage !== vals.stage){
     payload.stageChangedAt = serverTimestamp();
     if (["Won","Lost"].includes(vals.stage)) payload.closedAt = serverTimestamp();
@@ -5959,6 +5973,7 @@ function openSalesOrderDetail(id){
               <div style="font-size:11.5px;color:var(--muted);margin-top:2px">
                 ${[s.contact, s.email, s.phone].filter(Boolean).map(esc).join(" · ") || "No contact on file"}
                 ${s.address ? `<div>${esc(s.address)}</div>` : ""}
+                ${s.paymentTerms ? `<div>Payment terms: ${esc(s.paymentTerms)}</div>` : ""}
                 ${!s.supplierId ? `<div style="font-style:italic">Not found in the Suppliers catalog.</div>` : ""}
               </div>
             </div>
@@ -7132,14 +7147,26 @@ function openCostingForm(id, preset){
 
       <div class="eyebrow" style="margin:20px 0 2px">Supplier</div>
       <div class="fgrid">
-        <div class="field"><label for="co-supplier">Supplier name <span class="req">*</span></label>
-          <input id="co-supplier" value="${esc(d.supplierName||"")}"></div>
+        <div class="field"><label for="co-supplier">Supplier <span class="req">*</span></label>
+          <select id="co-supplier">
+            <option value="">— Select supplier —</option>
+            ${rows("suppliers").slice().sort((a,b)=>String(a.name||"").localeCompare(b.name||"")).map(s=>
+              `<option value="${s.id}"${d.supplierId===s.id?" selected":""}>${esc(s.name)}${s.controlNo?" ("+esc(s.controlNo)+")":""}</option>`
+            ).join("")}
+            <option value="__new__"${!d.supplierId && d.supplierName ? " selected":""}>+ Add new supplier…</option>
+          </select></div>
+        <div class="field" id="co-supplier-new-wrap" style="display:none">
+          <label for="co-supplier-new">New supplier name <span class="req">*</span></label>
+          <input id="co-supplier-new" value="${!d.supplierId?esc(d.supplierName||""):""}" placeholder="Not yet in the Suppliers catalog">
+          <span class="hint">Gets added to Suppliers automatically, with its own Control No., when you save.</span></div>
         <div class="field"><label for="co-contact">Contact person</label>
           <input id="co-contact" value="${esc(d.supplierContact||"")}"></div>
         <div class="field"><label for="co-email">Email or phone</label>
           <input id="co-email" value="${esc(d.supplierEmail||"")}"></div>
         <div class="field"><label for="co-ref">Supplier quote ref.</label>
           <input id="co-ref" value="${esc(d.supplierRef||"")}"></div>
+        <div class="field"><label for="co-terms">Payment terms</label>
+          <input id="co-terms" value="${esc(d.supplierPaymentTerms||"")}" placeholder="e.g. Net 30, 50% down / 50% on delivery"></div>
         <div class="field"><label for="co-valid">Quote valid until</label>
           <input id="co-valid" type="date" value="${esc(d.quoteValidUntil||"")}"></div>
         <div class="field"><label for="co-type">Purchase type</label>
@@ -7403,6 +7430,24 @@ function openCostingForm(id, preset){
     }
     recalc();
   });
+  // Picking an existing supplier pre-fills their catalog contact info —
+  // still editable, since who actually responded to this particular quote
+  // can differ from the supplier's default contact. "+ Add new supplier"
+  // reveals a plain name field instead, added to the catalog on save.
+  const supSel = $("#co-supplier"), supNewWrap = $("#co-supplier-new-wrap");
+  const syncSupplierFields = ()=>{
+    supNewWrap.style.display = supSel.value === "__new__" ? "block" : "none";
+    if (supSel.value && supSel.value !== "__new__"){
+      const cat = state.data.suppliers.get(supSel.value);
+      if (cat){
+        if (!$("#co-contact").value) $("#co-contact").value = cat.contactPerson || "";
+        if (!$("#co-email").value) $("#co-email").value = cat.email || cat.phone || "";
+        if (!$("#co-terms").value) $("#co-terms").value = cat.paymentTerms || "";
+      }
+    }
+  };
+  supSel.addEventListener("change", syncSupplierFields);
+  syncSupplierFields();
   // Typing into Telegraphic charges (admin only — it's readonly for
   // everyone else) marks it as manually overridden, so the bracket
   // auto-fill stops touching it until reset.
@@ -7420,22 +7465,51 @@ function openCostingForm(id, preset){
 
   $("#co-save").onclick = async ()=>{
     const box = $("#form-err");
-    const supplierName = $("#co-supplier").value.trim();
+    const supSelVal = $("#co-supplier").value;
     const items2 = collectItems().filter(i=>i.desc || i.price);
-    if (!supplierName){ box.textContent = "Supplier name is required."; box.classList.remove("hidden"); return; }
+    if (!supSelVal){ box.textContent = "Select a supplier, or add a new one."; box.classList.remove("hidden"); return; }
+    if (supSelVal === "__new__" && !$("#co-supplier-new").value.trim()){ box.textContent = "Enter the new supplier's name."; box.classList.remove("hidden"); return; }
     if (!items2.length){ box.textContent = "Add at least one item."; box.classList.remove("hidden"); return; }
-    const f = costingFigures({ ...draftDoc(), items: items2 });
+    $("#co-save").disabled = true;
     const ownerId = isManager() ? ($("#co-owner").value || myUid()) : (d.ownerId || myUid());
     const owner = state.users.get(ownerId);
+    const dept = owner?.department || state.profile.department;
+    // Resolve to an actual Suppliers-catalog record — creating one (with
+    // its own Control No.) on the spot if this is a brand-new name, so
+    // every costing sheet always links to a real supplier, never just a
+    // free-typed name that might not match anything later.
+    let supplierId = null, supplierName = "";
+    if (supSelVal === "__new__"){
+      const newName = $("#co-supplier-new").value.trim();
+      try{
+        const controlNo = await nextControlNo(dept, { series:"SUP", sourceCol:"suppliers" });
+        const ref = await addDoc(collection(db,"suppliers"), {
+          name: newName, contactPerson: $("#co-contact").value.trim()||null,
+          email: $("#co-email").value.trim()||null, controlNo,
+          paymentTerms: $("#co-terms").value.trim()||null,
+          ownerId: myUid(), department: dept, lastCanvassDate: todayISO(),
+          createdAt: serverTimestamp(), createdBy: myUid(), updatedAt: serverTimestamp()
+        });
+        supplierId = ref.id; supplierName = newName;
+      }catch(e){
+        $("#co-save").disabled = false;
+        box.textContent = "Couldn't add the new supplier: " + e.message; box.classList.remove("hidden"); return;
+      }
+    } else {
+      supplierId = supSelVal;
+      supplierName = state.data.suppliers.get(supSelVal)?.name || "";
+    }
+    const f = costingFigures({ ...draftDoc(), items: items2 });
     const payload = {
       controlNo: ($("#co-control")?.value.trim() || d.controlNo || null),
       inquiryId: d.inquiryId || null,
       accountId: $("#co-acct").value || null, dealId: $("#co-deal").value || null,
       accountManagerId: state.data.accounts.get($("#co-acct").value)?.accountManagerId || null,
       salesPerson: state.data.accounts.get($("#co-acct").value)?.salesPerson || null,
-      ownerId, department: owner?.department || state.profile.department,
-      supplierName, supplierContact: $("#co-contact").value.trim()||null,
+      ownerId, department: dept,
+      supplierId, supplierName, supplierContact: $("#co-contact").value.trim()||null,
       supplierEmail: $("#co-email").value.trim()||null, supplierRef: $("#co-ref").value.trim()||null,
+      supplierPaymentTerms: $("#co-terms").value.trim()||null,
       quoteValidUntil: $("#co-valid").value||null,
       purchaseType: $("#co-type").value, supplierCurrency: $("#co-cur").value,
       conversionRate: Number($("#co-rate").value||0)||null,
@@ -7517,8 +7591,9 @@ function openCostingDetail(id){
         ${d.controlNo ? `<div class="r"><div class="k">Control No.</div><div class="v mono" style="font-size:13px">${esc(d.controlNo)}</div></div>` : ""}
         <div class="r"><div class="k">Customer</div><div class="v">${esc(recordTitle("accounts",d.accountId))}</div></div>
         <div class="r"><div class="k">Status</div><div class="v">${pillFor("status",d.status)}</div></div>
-        <div class="r"><div class="k">Supplier</div><div class="v">${esc(d.supplierName||"—")}</div></div>
+        <div class="r"><div class="k">Supplier</div><div class="v">${supplierLinkHTML(d.supplierName, d.supplierId)}</div></div>
         <div class="r"><div class="k">Contact person</div><div class="v">${esc(d.supplierContact||"—")}</div></div>
+        ${d.supplierPaymentTerms ? `<div class="r"><div class="k">Payment terms</div><div class="v">${esc(d.supplierPaymentTerms)}</div></div>` : ""}
         <div class="r"><div class="k">Purchase type</div><div class="v">${esc(d.purchaseType||"International")}${f.intl?` (${esc(costingCurrency(d))} @ ₱${costingRate(d)})`:""}</div></div>
         <div class="r"><div class="k">Owner</div><div class="v">${esc(userName(d.ownerId))}</div></div>
         ${Number(d.revision||0) ? `<div class="r"><div class="k">Revisions</div><div class="v">${Number(d.revision)}</div></div>` : ""}
@@ -7603,6 +7678,7 @@ function openCostingDetail(id){
       <button class="btn" data-close>Close</button>
       ${canWrite(d, "costing") ? `<button class="btn pri" id="co-edit">Edit</button>` : ""}
     </div>`, true);
+  wireModalOpens($("#modal-root"));
   const em = document.querySelector("#co-edit");
   if (em) em.onclick = ()=>{ closeModal(true); openCostingForm(id); };
   const tq = document.querySelector("#co-to-quote");
