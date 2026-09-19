@@ -1425,7 +1425,6 @@ const SCHEMAS = {
   suppliers: {
     label:"Supplier", plural:"Suppliers", icon:"⬡", titleField:"name",
     fields:[
-      { k:"controlNo",       l:"Control No.",     type:"text",  table:true, system:true },
       { k:"name",            l:"Supplier name",   type:"text",  req:true, table:true },
       { k:"contactPerson",   l:"Contact person",  type:"text",  table:true },
       { k:"phone",           l:"Phone",           type:"tel",   table:true },
@@ -5715,7 +5714,7 @@ function controlNoSeriesOf(cn){
   return m ? { key:m[1], no:Number(m[2]) } : null;
 }
 async function nextControlNo(dept, opts={}){
-  const series = opts.series || "CN";       // "CN" for Inquiries, "SUP" for Suppliers
+  const series = opts.series || "CN";       // "CN" for Inquiries
   const sourceCol = opts.sourceCol || "inquiries";
   const now = new Date();
   const key = `${series}-${QUOTE_PREFIX[dept] || "ADM"}-${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
@@ -5808,10 +5807,6 @@ async function submitForm(col,id){
   if (!id){
     payload.createdAt = serverTimestamp(); payload.createdBy = myUid();
     if (col==="deals") payload.stageChangedAt = serverTimestamp();
-    if (col==="suppliers"){
-      try{ payload.controlNo = await nextControlNo(payload.department, { series:"SUP", sourceCol:"suppliers" }); }
-      catch(e){ console.warn("supplier control no.", e); }
-    }
   } else if (col==="deals" && prev && prev.stage !== vals.stage){
     payload.stageChangedAt = serverTimestamp();
     if (["Won","Lost"].includes(vals.stage)) payload.closedAt = serverTimestamp();
@@ -7217,18 +7212,8 @@ function openCostingForm(id, preset){
 
       <div class="eyebrow" style="margin:20px 0 2px">Supplier</div>
       <div class="fgrid">
-        <div class="field"><label for="co-supplier">Supplier <span class="req">*</span></label>
-          <select id="co-supplier">
-            <option value="">— Select supplier —</option>
-            ${rows("suppliers").slice().sort((a,b)=>String(a.name||"").localeCompare(b.name||"")).map(s=>
-              `<option value="${s.id}"${d.supplierId===s.id?" selected":""}>${esc(s.name)}${s.controlNo?" ("+esc(s.controlNo)+")":""}</option>`
-            ).join("")}
-            <option value="__new__"${!d.supplierId && d.supplierName ? " selected":""}>+ Add new supplier…</option>
-          </select></div>
-        <div class="field" id="co-supplier-new-wrap" style="display:none">
-          <label for="co-supplier-new">New supplier name <span class="req">*</span></label>
-          <input id="co-supplier-new" value="${!d.supplierId?esc(d.supplierName||""):""}" placeholder="Not yet in the Suppliers catalog">
-          <span class="hint" id="co-supplier-new-hint">Gets added to Suppliers automatically, with its own Control No., when you save.</span></div>
+        <div class="field"><label for="co-supplier">Supplier name <span class="req">*</span></label>
+          <input id="co-supplier" value="${esc(d.supplierName||"")}" placeholder="Filled in automatically from the canvass sheet's Winner"></div>
         <div class="field"><label for="co-contact">Contact person</label>
           <input id="co-contact" value="${esc(d.supplierContact||"")}"></div>
         <div class="field"><label for="co-email">Email or phone</label>
@@ -7500,33 +7485,6 @@ function openCostingForm(id, preset){
     }
     recalc();
   });
-  // Picking an existing supplier pre-fills their catalog contact info —
-  // still editable, since who actually responded to this particular quote
-  // can differ from the supplier's default contact. "+ Add new supplier"
-  // reveals a plain name field instead, added to the catalog on save.
-  const supSel = $("#co-supplier"), supNewWrap = $("#co-supplier-new-wrap");
-  const syncSupplierFields = ()=>{
-    supNewWrap.style.display = supSel.value === "__new__" ? "block" : "none";
-    if (supSel.value && supSel.value !== "__new__"){
-      const cat = state.data.suppliers.get(supSel.value);
-      if (cat){
-        if (!$("#co-contact").value) $("#co-contact").value = cat.contactPerson || "";
-        if (!$("#co-email").value) $("#co-email").value = cat.email || cat.phone || "";
-        if (!$("#co-terms").value) $("#co-terms").value = cat.paymentTerms || "";
-      }
-    }
-  };
-  supSel.addEventListener("change", syncSupplierFields);
-  syncSupplierFields();
-  // Warn as soon as the typed name matches an existing supplier, rather
-  // than silently linking to them only after Save is clicked.
-  const newHint = $("#co-supplier-new-hint");
-  $("#co-supplier-new").addEventListener("input", (e)=>{
-    const match = findSupplierRecord(e.target.value);
-    newHint.textContent = match
-      ? `Already in the catalog (${match.controlNo || "no control no."}) — this will link to that existing supplier, not create a duplicate.`
-      : "Gets added to Suppliers automatically, with its own Control No., when you save.";
-  });
   // Typing into Telegraphic charges (admin only — it's readonly for
   // everyone else) marks it as manually overridden, so the bracket
   // auto-fill stops touching it until reset.
@@ -7544,49 +7502,15 @@ function openCostingForm(id, preset){
 
   $("#co-save").onclick = async ()=>{
     const box = $("#form-err");
-    const supSelVal = $("#co-supplier").value;
+    const supplierName = $("#co-supplier").value.trim();
     const items2 = collectItems().filter(i=>i.desc || i.price);
-    if (!supSelVal){ box.textContent = "Select a supplier, or add a new one."; box.classList.remove("hidden"); return; }
-    if (supSelVal === "__new__" && !$("#co-supplier-new").value.trim()){ box.textContent = "Enter the new supplier's name."; box.classList.remove("hidden"); return; }
+    if (!supplierName){ box.textContent = "Enter the supplier's name."; box.classList.remove("hidden"); return; }
     if (!items2.length){ box.textContent = "Add at least one item."; box.classList.remove("hidden"); return; }
     $("#co-save").disabled = true;
     const ownerId = isManager() ? ($("#co-owner").value || myUid()) : (d.ownerId || myUid());
     const owner = state.users.get(ownerId);
     const dept = owner?.department || state.profile.department;
-    // Resolve to an actual Suppliers-catalog record — creating one (with
-    // its own Control No.) on the spot if this is a brand-new name, so
-    // every costing sheet always links to a real supplier, never just a
-    // free-typed name that might not match anything later.
-    let supplierId = null, supplierName = "";
-    if (supSelVal === "__new__"){
-      const newName = $("#co-supplier-new").value.trim();
-      const existing = findSupplierRecord(newName);
-      if (existing){
-        // Someone already exists by this exact name — reuse them instead
-        // of minting a duplicate. Covers a double-click, a retry after an
-        // earlier save failed partway through, or simply not noticing the
-        // supplier was already in the catalog.
-        supplierId = existing.id; supplierName = existing.name;
-      } else {
-        try{
-          const controlNo = await nextControlNo(dept, { series:"SUP", sourceCol:"suppliers" });
-          const ref = await addDoc(collection(db,"suppliers"), {
-            name: newName, contactPerson: $("#co-contact").value.trim()||null,
-            email: $("#co-email").value.trim()||null, controlNo,
-            paymentTerms: $("#co-terms").value.trim()||null,
-            ownerId: myUid(), department: dept, lastCanvassDate: todayISO(),
-            createdAt: serverTimestamp(), createdBy: myUid(), updatedAt: serverTimestamp()
-          });
-          supplierId = ref.id; supplierName = newName;
-        }catch(e){
-          $("#co-save").disabled = false;
-          box.textContent = "Couldn't add the new supplier: " + e.message; box.classList.remove("hidden"); return;
-        }
-      }
-    } else {
-      supplierId = supSelVal;
-      supplierName = state.data.suppliers.get(supSelVal)?.name || "";
-    }
+    const supplierId = d.supplierId || null;   // carried through unchanged if a record already had one — never created here
     const f = costingFigures({ ...draftDoc(), items: items2 });
     const payload = {
       controlNo: ($("#co-control")?.value.trim() || d.controlNo || null),
