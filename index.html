@@ -2339,6 +2339,7 @@ const NAV = [
   ]},
   { group:"Administration", admin:true, items:[
     { id:"team",     label:"Team",     icon:"◑" },
+    { id:"activity", label:"Activity History", icon:"◷" },
     { id:"settings", label:"Settings", icon:"⚙" }
   ]}
 ];
@@ -2438,7 +2439,7 @@ $("#new-btn").onclick = ()=>{
 /* ------------------------------------------------------------------ */
 const TITLES = { dashboard:"Dashboard", leads:"Leads", pipeline:"Opportunities", accounts:"Customers",
                  contacts:"Contacts", activities:"Activity log", campaigns:"Campaigns",
-                 reports:"Reports", team:"Team", settings:"Settings",
+                 reports:"Reports", team:"Team", settings:"Settings", activity:"Activity History",
                  quotations:"Quotations", calendar:"Calendar", tasks:"My Tasks", performance:"Performance",
                  prospects:"Prospect companies", partners:"Partnership management",
                  projects:"Project opportunities", engagement:"Client engagement",
@@ -2456,7 +2457,7 @@ function render(){
   // disappears for admins everywhere except Team (adding people is an
   // admin task, not "business data").
   $("#new-btn").classList.toggle("hidden",
-    ["reports","settings","forecast","dashboard"].includes(state.route)
+    ["reports","settings","forecast","dashboard","activity"].includes(state.route)
     || (isAdmin() && state.route !== "team"));
   $("#new-btn").textContent = state.route==="team" ? "Add person" : "New " + (SCHEMAS[NEW_FOR[state.route]]?.label.toLowerCase() || "record");
   const v = $("#view");
@@ -2475,6 +2476,7 @@ function render(){
     case "pipeline":   v.innerHTML = viewPipeline();  break;
     case "reports":    v.innerHTML = viewReports();   break;
     case "team":       v.innerHTML = viewTeam();      break;
+    case "activity":   v.innerHTML = viewActivityHistory(); break;
     case "settings":   v.innerHTML = viewSettings();  break;
     default:           v.innerHTML = viewList(state.route);
   }
@@ -4768,6 +4770,74 @@ function viewReports(){
 /* ------------------------------------------------------------------ */
 /* 14. TEAM (admin)                                                    */
 /* ------------------------------------------------------------------ */
+/* Every record across every collection already carries createdAt/
+   createdBy, and — as of this feature — updatedBy alongside updatedAt.
+   Approval/Reject/Decline decisions are even richer: Costing and
+   Quotations already keep a full approvalLog array (who, their role,
+   when) for every decision ever made on that record, not just the
+   latest one. This just reads all of that back out into one timeline —
+   no new tracking collection, no extra writes beyond updatedBy. */
+function buildActivityFeed(){
+  const events = [];
+  COLLECTIONS.forEach(col=>{
+    if (!SCHEMAS[col]) return;
+    rows(col).forEach(d=>{
+      let title; try{ title = titleOf(col, d); }catch{ title = d.id; }
+      if (d.createdAt) events.push({ at:d.createdAt, userId:d.createdBy, action:"Created", col, id:d.id, title });
+      if (d.updatedBy && d.updatedAt){
+        const created = toDate(d.createdAt), updated = toDate(d.updatedAt);
+        // Skip the initial save showing up as a separate "Updated" line —
+        // only a genuinely later edit counts.
+        if (!created || !updated || (updated - created) > 5000)
+          events.push({ at:d.updatedAt, userId:d.updatedBy, action:"Updated", col, id:d.id, title });
+      }
+      if (Array.isArray(d.approvalLog)) d.approvalLog.forEach(entry=>{
+        events.push({ at:entry.at, userId:entry.by, userLabel:entry.byName, action:entry.action, col, id:d.id, title });
+      });
+    });
+  });
+  return events.filter(e=>e.at).sort((a,b)=> (toDate(b.at)||0) - (toDate(a.at)||0));
+}
+function viewActivityHistory(){
+  if (!isAdmin()) return `<div class="empty"><strong>Admin only</strong><p>This view isn't available for your role.</p></div>`;
+  const f = state.filters.activity || (state.filters.activity = { user:"", col:"", action:"" });
+  const all = buildActivityFeed();
+  const LIMIT = 400;
+  const list = all.filter(e=>
+    (!f.user || e.userId===f.user) &&
+    (!f.col || e.col===f.col) &&
+    (!f.action || e.action===f.action)
+  ).slice(0, LIMIT);
+  const userOpts = Array.from(state.users.values()).sort((a,b)=>(a.displayName||"").localeCompare(b.displayName||""));
+  const actionTypes = Array.from(new Set(all.map(e=>e.action))).sort();
+  const toneFor = a => a==="Approved" ? "accent" : (a==="Rejected"||a==="Declined") ? "alert" : (a==="Updated" ? "warn" : "");
+
+  return `
+  <div class="toolbar">
+    <select data-filter="user"><option value="">Everyone</option>
+      ${userOpts.map(u=>`<option value="${u.id}"${f.user===u.id?" selected":""}>${esc(u.displayName||u.loginName||"—")}</option>`).join("")}
+    </select>
+    <select data-filter="col"><option value="">All modules</option>
+      ${COLLECTIONS.filter(c=>SCHEMAS[c]).sort((a,b)=>SCHEMAS[a].label.localeCompare(SCHEMAS[b].label)).map(c=>
+        `<option value="${c}"${f.col===c?" selected":""}>${esc(SCHEMAS[c].plural||SCHEMAS[c].label)}</option>`).join("")}
+    </select>
+    <select data-filter="action"><option value="">All actions</option>
+      ${actionTypes.map(a=>`<option value="${a}"${f.action===a?" selected":""}>${esc(a)}</option>`).join("")}
+    </select>
+    <div style="flex:1"></div>
+    <span class="eyebrow">${list.length}${all.length>LIMIT?` of ${all.length} — most recent ${LIMIT} shown`:" events"}</span>
+  </div>
+  <div class="card"><div class="tbl-wrap"><table>
+    <thead><tr><th style="white-space:nowrap">When (PH time)</th><th>Who</th><th>Action</th><th>Module</th><th>Record</th></tr></thead>
+    <tbody>${list.length ? list.map(e=>`<tr>
+      <td class="mono" style="font-size:12px;white-space:nowrap">${fmtDateTimePH(e.at)}</td>
+      <td>${esc(e.userLabel || userName(e.userId))}</td>
+      <td><span class="pill ${toneFor(e.action)}">${esc(e.action)}</span></td>
+      <td>${esc(SCHEMAS[e.col]?.label || e.col)}</td>
+      <td><span class="lnk" data-open="${e.col}:${e.id}">${esc(e.title)}</span></td>
+    </tr>`).join("") : `<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:22px">No activity matches these filters.</td></tr>`}</tbody>
+  </table></div></div>`;
+}
 function viewTeam(){
   if(!isAdmin()) return `<div class="empty"><strong>Administrators only</strong>Ask an admin if you need someone added.</div>`;
   const tf = state.filters.team || (state.filters.team = {});
@@ -5732,7 +5802,7 @@ async function submitForm(col,id){
     box.scrollIntoView({block:"nearest"}); return;
   }
   const owner = state.users.get(vals.ownerId);
-  const payload = { ...vals, department: owner?.department || state.profile.department, updatedAt: serverTimestamp() };
+  const payload = { ...vals, department: owner?.department || state.profile.department, updatedAt: serverTimestamp(), updatedBy: myUid() };
   if (col==="deals") payload.probability = stageProb(vals.stage);
   const prev = id ? state.data[col].get(id) : null;
   if (!id){
@@ -6965,7 +7035,7 @@ function openInquiryForm(id, preset){
         ? finalCombo.usedSuppliers.map(i=>suppliers2[i]?.name).filter(Boolean).join(" + ")
         : null,
       notes: $("#iq-notes").value||null,
-      updatedAt: serverTimestamp()
+      updatedAt: serverTimestamp(), updatedBy: myUid()
     };
     // Tag which Sales Person's book this is — copied from the Customer,
     // never typed here, so Procurement never has to think about it.
@@ -7158,7 +7228,7 @@ function openCostingForm(id, preset){
         <div class="field" id="co-supplier-new-wrap" style="display:none">
           <label for="co-supplier-new">New supplier name <span class="req">*</span></label>
           <input id="co-supplier-new" value="${!d.supplierId?esc(d.supplierName||""):""}" placeholder="Not yet in the Suppliers catalog">
-          <span class="hint">Gets added to Suppliers automatically, with its own Control No., when you save.</span></div>
+          <span class="hint" id="co-supplier-new-hint">Gets added to Suppliers automatically, with its own Control No., when you save.</span></div>
         <div class="field"><label for="co-contact">Contact person</label>
           <input id="co-contact" value="${esc(d.supplierContact||"")}"></div>
         <div class="field"><label for="co-email">Email or phone</label>
@@ -7448,6 +7518,15 @@ function openCostingForm(id, preset){
   };
   supSel.addEventListener("change", syncSupplierFields);
   syncSupplierFields();
+  // Warn as soon as the typed name matches an existing supplier, rather
+  // than silently linking to them only after Save is clicked.
+  const newHint = $("#co-supplier-new-hint");
+  $("#co-supplier-new").addEventListener("input", (e)=>{
+    const match = findSupplierRecord(e.target.value);
+    newHint.textContent = match
+      ? `Already in the catalog (${match.controlNo || "no control no."}) — this will link to that existing supplier, not create a duplicate.`
+      : "Gets added to Suppliers automatically, with its own Control No., when you save.";
+  });
   // Typing into Telegraphic charges (admin only — it's readonly for
   // everyone else) marks it as manually overridden, so the bracket
   // auto-fill stops touching it until reset.
@@ -7481,19 +7560,28 @@ function openCostingForm(id, preset){
     let supplierId = null, supplierName = "";
     if (supSelVal === "__new__"){
       const newName = $("#co-supplier-new").value.trim();
-      try{
-        const controlNo = await nextControlNo(dept, { series:"SUP", sourceCol:"suppliers" });
-        const ref = await addDoc(collection(db,"suppliers"), {
-          name: newName, contactPerson: $("#co-contact").value.trim()||null,
-          email: $("#co-email").value.trim()||null, controlNo,
-          paymentTerms: $("#co-terms").value.trim()||null,
-          ownerId: myUid(), department: dept, lastCanvassDate: todayISO(),
-          createdAt: serverTimestamp(), createdBy: myUid(), updatedAt: serverTimestamp()
-        });
-        supplierId = ref.id; supplierName = newName;
-      }catch(e){
-        $("#co-save").disabled = false;
-        box.textContent = "Couldn't add the new supplier: " + e.message; box.classList.remove("hidden"); return;
+      const existing = findSupplierRecord(newName);
+      if (existing){
+        // Someone already exists by this exact name — reuse them instead
+        // of minting a duplicate. Covers a double-click, a retry after an
+        // earlier save failed partway through, or simply not noticing the
+        // supplier was already in the catalog.
+        supplierId = existing.id; supplierName = existing.name;
+      } else {
+        try{
+          const controlNo = await nextControlNo(dept, { series:"SUP", sourceCol:"suppliers" });
+          const ref = await addDoc(collection(db,"suppliers"), {
+            name: newName, contactPerson: $("#co-contact").value.trim()||null,
+            email: $("#co-email").value.trim()||null, controlNo,
+            paymentTerms: $("#co-terms").value.trim()||null,
+            ownerId: myUid(), department: dept, lastCanvassDate: todayISO(),
+            createdAt: serverTimestamp(), createdBy: myUid(), updatedAt: serverTimestamp()
+          });
+          supplierId = ref.id; supplierName = newName;
+        }catch(e){
+          $("#co-save").disabled = false;
+          box.textContent = "Couldn't add the new supplier: " + e.message; box.classList.remove("hidden"); return;
+        }
       }
     } else {
       supplierId = supSelVal;
@@ -7522,7 +7610,7 @@ function openCostingForm(id, preset){
       gpPct: Number($("#co-gp").value||0), contingencyPct: Number($("#co-cont").value||0)||null,
       totalCost: f.cost, markupPct: f.markup, sellingPrice: f.sell, quotedPrice: f.quoted,
       remarks: $("#co-remarks").value||null,
-      updatedAt: serverTimestamp()
+      updatedAt: serverTimestamp(), updatedBy: myUid()
     };
     if (!id) payload.status = "Draft";
     const wasApproved = id && d.status === "Approved";
@@ -7976,7 +8064,7 @@ function openQuoteForm(id, preset){
       salesPerson: state.data.accounts.get($("#q-acct").value)?.salesPerson || null,
       controlNo: ($("#q-control")?.value.trim() || q.controlNo || null),
       costingId: q.costingId || null,
-      updatedAt: serverTimestamp()
+      updatedAt: serverTimestamp(), updatedBy: myUid()
     };
     if (id){
       // Keep what this quotation looked like before this edit — Preview
