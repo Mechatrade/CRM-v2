@@ -5892,7 +5892,7 @@ async function upsertCanvassCatalog(items, suppliers, canvassDate){
    number and identifying details forward to the next, so a quotation can
    always be traced back to the inquiry it started from. Shared by the
    "Proceed →" row action and the buttons inside each record's detail view. */
-function proceedRecord(col, id){
+async function proceedRecord(col, id){
   const d = state.data[col]?.get(id);
   if (!d) return;
   if (col === "inquiries"){
@@ -5911,6 +5911,8 @@ function proceedRecord(col, id){
       toast("Tick a Winner for at least one item (in each supplier's \"Items quoted\" list) before proceeding.", true);
       return;
     }
+    const accountId = await resolveInquiryAccountId(d);
+    if (!accountId) toast("This inquiry isn't linked to a Customer — add one on the costing sheet, or it won't carry through to the quotation.", true);
     const queue = combo.usedSuppliers.map(supIdx=>{
       const sup = suppliers[supIdx] || {};
       const costItems = items
@@ -5930,7 +5932,7 @@ function proceedRecord(col, id){
       const { sup, costItems } = queue[i];
       openForm("costing", null, {
         controlNo: d.controlNo || null, inquiryId: id,
-        accountId: d.relatedType === "Account" ? d.relatedId : null,
+        accountId,
         supplierName: sup.name || "", supplierContact: sup.contact || "",
         shippingCost: sup.shippingCost || null,
         purchaseType: sup.purchaseType || "International",
@@ -5969,6 +5971,7 @@ function proceedRecord(col, id){
     }
     const items = siblings.flatMap(c=> costingItemQuotes(c));
     const first = siblings[0] || d;
+    if (!first.accountId) toast("This costing sheet has no Customer linked — the quotation will open without one; add it before sending.", true);
     // The Subject line needs one line, not the item's own multi-line
     // Brand/Model/Description block — collapse it just for this purpose.
     const oneLine = s => String(s||"").split("\n").filter(Boolean).join(" — ");
@@ -6232,6 +6235,33 @@ async function cascadeLeadConversion(leadId, accountId){
       }catch(e){ console.warn("cascade lead->account", col, r.id, e); }
     }
   }
+}
+/* Resolves an Inquiry's linked Account for handoff to Costing — normally
+   just relatedType "Account" already pointing at the right record. As a
+   safety net, if it's still pointing at a Lead that's already Converted
+   (the cascade above should already have fixed this, but an inquiry
+   created after conversion could still reference the stale Lead), this
+   falls back to a company-name match and permanently repairs the
+   inquiry's own relatedType/relatedId, so it's resolved correctly from
+   then on rather than needing this fallback every time. */
+async function resolveInquiryAccountId(inq){
+  if (inq.relatedType === "Account" && inq.relatedId) return inq.relatedId;
+  if (inq.relatedType === "Lead" && inq.relatedId){
+    const lead = state.data.leads.get(inq.relatedId);
+    if (lead?.status === "Converted" && lead.company){
+      const norm = s => String(s||"").trim().toLowerCase();
+      const match = rows("accounts").find(a => norm(a.name) === norm(lead.company));
+      if (match){
+        try{
+          await updateDoc(doc(db,"inquiries",inq.id), {
+            relatedType:"Account", relatedId:match.id, updatedAt: serverTimestamp()
+          });
+        }catch(e){ console.warn("self-heal inquiry account link", e); }
+        return match.id;
+      }
+    }
+  }
+  return null;
 }
 
 /* Everything that points at a record, so deleting can't leave orphans
@@ -7201,7 +7231,8 @@ function openCostingForm(id, preset){
             : "System-generated — only an administrator can change this."}</span></div>` : ""}
         <div class="field"><label for="co-acct">Customer</label>
           <select id="co-acct"><option value="">—</option>
-            ${accts.map(a=>`<option value="${a.id}"${a.id===d.accountId?" selected":""}>${esc(a.name)}</option>`).join("")}</select></div>
+            ${accts.map(a=>`<option value="${a.id}"${a.id===d.accountId?" selected":""}>${esc(a.name)}</option>`).join("")}</select>
+          ${d.inquiryId && !d.accountId ? `<span class="hint" style="color:var(--warn)">This sheet came from an inquiry with no Customer linked — pick one, or it won't carry through to the quotation.</span>` : ""}</div>
         <div class="field"><label for="co-deal">Opportunity</label>
           <select id="co-deal"><option value="">— None —</option>
             ${dls.map(x=>`<option value="${x.id}"${x.id===d.dealId?" selected":""}>${esc(x.title)}</option>`).join("")}</select></div>
