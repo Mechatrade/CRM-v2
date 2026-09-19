@@ -3238,7 +3238,7 @@ function viewList(col){
       ${f.showConverted ? "Hide converted" : `Show converted (${convertedLeads.length})`}
     </button>`:""}
     <div style="flex:1"></div>
-    <button class="btn" data-import="${col}" title="Paste from Excel or upload a CSV">Import</button>
+    ${["inquiries","costing","quotations","followups"].includes(col) ? "" : `<button class="btn" data-import="${col}" title="Paste from Excel or upload a CSV">Import</button>`}
     ${col==="quotations" ? seriesBadge() : ""}
     ${col==="quotations" && !net.online
       ? `<span class="pill warn" title="Existing quotations can still be edited offline">new quotes need a connection</span>`:""}
