@@ -1443,12 +1443,12 @@ const SCHEMAS = {
       { k:"supplierType",    l:"Supplier Type",   type:"select",
         opts:["Manufacturer","Distributor","Dealer","Service Provider","Other"], table:true },
       { k:"_compliance",     l:"Compliance",       type:"compliance", table:true },
-      { k:"docSecDti",           l:"SEC/DTI Registration",              type:"url", fileLink:true },
-      { k:"docBir2303",          l:"BIR Form 2303",                     type:"url", fileLink:true },
-      { k:"docMayorsPermit",     l:"Mayor's/Business Permit",           type:"url", fileLink:true },
-      { k:"docDistributorCert",  l:"Authorized Distributor Certificate (if applicable)", type:"url", fileLink:true },
-      { k:"docCompanyProfile",   l:"Company Profile",                   type:"url", fileLink:true },
-      { k:"docBankDetails",      l:"Bank Details",                      type:"url", fileLink:true },
+      { k:"docSecDti",           l:"SEC/DTI Registration",              type:"confirm", fileLink:true },
+      { k:"docBir2303",          l:"BIR Form 2303",                     type:"confirm", fileLink:true },
+      { k:"docMayorsPermit",     l:"Mayor's/Business Permit",           type:"confirm", fileLink:true },
+      { k:"docDistributorCert",  l:"Authorized Distributor Certificate (if applicable)", type:"confirm", fileLink:true },
+      { k:"docCompanyProfile",   l:"Company Profile",                   type:"confirm", fileLink:true },
+      { k:"docBankDetails",      l:"Bank Details",                      type:"confirm", fileLink:true },
       { k:"lastCanvassDate", l:"Last canvassed on", type:"date", table:true },
       { k:"ownerId",         l:"Owner",           type:"ref",   refTo:"users", table:true, assignOnly:true },
       { k:"notes",           l:"Notes",           type:"textarea", full:true }
@@ -2574,6 +2574,8 @@ function cell(col,f,d){
     if (f.refTo === "users") return personCell(v);
     return esc(refLabel(f.refTo, v, d));
   }
+  if (f.type === "confirm")
+    return v ? `<span class="pill accent">✓ Confirmed</span>` : `<span style="color:var(--faint)">Not yet</span>`;
   if (f.type === "url" && f.fileLink)
     return v ? `<a href="${esc(v)}" target="_blank" rel="noopener" class="pill accent">📄 View file</a>`
              : `<span style="color:var(--faint)">Not uploaded</span>`;
@@ -3469,13 +3471,20 @@ function complianceFieldHTML(prefix, f, v){
       <select id="${id}" data-ck="${f.k}"><option value="">—</option>
         ${f.opts.map(o=>`<option value="${esc(o)}"${o===v?" selected":""}>${esc(o)}</option>`).join("")}</select></div>`;
   }
+  if (f.type === "confirm"){
+    const folder = state.settings.driveFolders?.[f.k];
+    return `<div class="field full">
+      ${folder?`<a href="${esc(folder)}" target="_blank" rel="noopener" class="hint" style="display:inline-block;margin-bottom:6px">📁 Open destination folder — upload it here first</a><br>`:""}
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:500">
+        <input type="checkbox" id="${id}" data-ck="${f.k}"${v?" checked":""}>
+        ${esc(f.l)} — Confirmed uploaded
+      </label>
+    </div>`;
+  }
   const t = f.type==="url" ? "url" : f.type==="email" ? "email" : f.type==="tel" ? "tel" : "text";
-  const ph = f.fileLink ? ' placeholder="Paste the Google Drive share-link, after uploading it there"' : "";
-  const folder = f.fileLink ? state.settings.driveFolders?.[f.k] : null;
   return `<div class="field${f.full?" full":""}">
     <label for="${id}">${esc(f.l)}</label>
-    ${folder?`<a href="${esc(folder)}" target="_blank" rel="noopener" class="hint" style="display:inline-block;margin-bottom:5px">📁 Open destination folder — upload it here first</a><br>`:""}
-    <input id="${id}" data-ck="${f.k}" type="${t}" value="${esc(v||"")}"${ph}>
+    <input id="${id}" data-ck="${f.k}" type="${t}" value="${esc(v||"")}">
   </div>`;
 }
 /* The fields the compliance gate actually asks for — required contact/
@@ -3540,7 +3549,8 @@ function openSupplierComplianceGate(quotationId, entries){
         const required = SUPPLIER_REQUIRED_FIELDS.includes(f.k) || SUPPLIER_DOCS.find(d=>d.k===f.k)?.req;
         if (!required) continue;
         const el = document.querySelector(`#sg-${i}-${f.k}`);
-        if (!el?.value.trim()){
+        const ok = f.type === "confirm" ? el?.checked : el?.value.trim();
+        if (!ok){
           toast(`${entries[i].name}: ${f.l} is required.`, true);
           return;
         }
@@ -3551,7 +3561,10 @@ function openSupplierComplianceGate(quotationId, entries){
       for (let i=0; i<entries.length; i++){
         const e = entries[i];
         const payload = {};
-        compFields.forEach(f=>{ payload[f.k] = document.querySelector(`#sg-${i}-${f.k}`)?.value.trim() || null; });
+        compFields.forEach(f=>{
+          const el = document.querySelector(`#sg-${i}-${f.k}`);
+          payload[f.k] = f.type === "confirm" ? !!el?.checked : (el?.value.trim() || null);
+        });
         if (e.record) await updateDoc(doc(db,"suppliers",e.record.id), payload);
         else await addDoc(collection(db,"suppliers"), {
           ...payload, ownerId: myUid(), department: state.profile.department,
@@ -3651,8 +3664,9 @@ function openSalesOrderConvertPreview(quotationId){
       <div class="totals"><div class="row grand"><span>Total</span><span id="so-total">${money(q.total)}</span></div></div>
 
       <div class="eyebrow" style="margin:18px 0 8px">Customer PO reference</div>
+      ${state.settings.driveFolders?.customerPO ? `<a href="${esc(state.settings.driveFolders.customerPO)}" target="_blank" rel="noopener" class="hint" style="display:inline-block;margin-bottom:8px">📁 Open destination folder — upload the customer's PO file here first</a><br>` : ""}
       <div class="fgrid">
-        <div class="field"><label for="so-po-no">PO number</label>
+        <div class="field"><label for="so-po-no">PO number <span class="req">*</span></label>
           <input id="so-po-no" placeholder="e.g. PO-2026-0456"></div>
         <div class="field"><label for="so-po-date">PO date</label>
           <input id="so-po-date" type="date"></div>
@@ -3706,6 +3720,7 @@ function openSalesOrderConvertPreview(quotationId){
   $("#so-confirm").onclick = ()=>{
     const sel = collectSOSelection();
     if (!sel.items.length){ toast("Include at least one item.", true); return; }
+    if (!sel.poNumber){ toast("Enter the customer's PO number before converting.", true); return; }
     convertQuoteToSalesOrder(q, chain, sel);
   };
 }
@@ -5243,16 +5258,20 @@ function viewSettings(){
     </div>
   </div>
 
-  <div class="eyebrow" style="margin:24px 0 8px">Supplier document destination folders</div>
+  <div class="eyebrow" style="margin:24px 0 8px">Document destination folders</div>
   <div class="card" style="max-width:760px;padding:18px 20px">
     <p class="note" style="margin:0 0 12px">The Google Drive folder each document type should actually be uploaded
-      to, so everyone files things in the same place — not a personal or random link. Whoever completes a
-      supplier's compliance info sees an "Open destination folder" link per document, pointing here. Leave any of
-      these blank and that hint just won't show for that document type.</p>
+      to, so everyone files things in the same place — not a personal or random link. Whoever's handling a
+      supplier's compliance info, or converting a Quotation to a Sales Order, sees an "Open destination folder"
+      link pointing here. Leave any of these blank and that hint just won't show for that document type.</p>
     ${SUPPLIER_DOCS.map(dd=>`<div class="field full" style="margin-bottom:14px">
       <label for="s-folder-${dd.k}">${esc(dd.l)}${dd.req?"":" (optional)"}</label>
       <input id="s-folder-${dd.k}" value="${esc(s.driveFolders?.[dd.k]||"")}" placeholder="Google Drive folder link">
     </div>`).join("")}
+    <div class="field full" style="margin-bottom:0">
+      <label for="s-folder-customerPO">Customer PO Files</label>
+      <input id="s-folder-customerPO" value="${esc(s.driveFolders?.customerPO||"")}" placeholder="Google Drive folder link">
+    </div>
   </div>
 
   <div class="eyebrow" style="margin:24px 0 8px">Data repair</div>
@@ -5716,8 +5735,10 @@ async function saveSettings(){
       "companyWeb","companyTin","bankDetails","quoteTerms"].map(k=>[k, $("#s-"+k).value])),
     fxRates: Object.fromEntries(["USD","CNY","EUR","JPY","SGD","KRW","TWD"]
       .map(c=>[c, Number($("#s-fx-"+c).value||0)]).filter(([,v])=>v>0)),
-    driveFolders: Object.fromEntries(SUPPLIER_DOCS
-      .map(dd=>[dd.k, $("#s-folder-"+dd.k).value.trim()]).filter(([,v])=>v)),
+    driveFolders: {
+      ...Object.fromEntries(SUPPLIER_DOCS.map(dd=>[dd.k, $("#s-folder-"+dd.k).value.trim()]).filter(([,v])=>v)),
+      ...($("#s-folder-customerPO").value.trim() ? { customerPO: $("#s-folder-customerPO").value.trim() } : {})
+    },
     ...Object.fromEntries(LISTS.map(L=>[L.k, $("#s-"+L.k).value.split("\n").map(s=>s.trim()).filter(Boolean)]))
   };
   try{ await setDoc(doc(db,"settings","config"), payload, { merge:true }); toast("Settings saved"); }
@@ -5812,6 +5833,14 @@ function fieldHTML(col,f,d,isNew){
   const lab = `<label for="${id}">${esc(f.l)}${f.req?' <span class="req">*</span>':""}</label>`;
   let input;
   if (f.type === "textarea") input = `<textarea id="${id}" data-k="${f.k}">${esc(v)}</textarea>`;
+  else if (f.type === "confirm"){
+    const folder = state.settings.driveFolders?.[f.k];
+    const box = `<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400">
+      <input type="checkbox" id="${id}" data-k="${f.k}"${v?" checked":""}> Confirmed uploaded</label>`;
+    input = (folder
+      ? `<a href="${esc(folder)}" target="_blank" rel="noopener" class="hint" style="display:inline-block;margin-bottom:6px">📁 Open destination folder — upload it here first</a><br>`
+      : "") + box;
+  }
   else if (f.type === "select"){
     const opts = f.optsFrom ? (state.settings[f.optsFrom]||[]) : f.opts;
     // A stored value from before the option list changed (e.g. a lead
@@ -5981,15 +6010,13 @@ function controlNoSeriesOf(cn){
   const m = String(cn||"").match(/^(.*)-(\d+)$/);
   return m ? { key:m[1], no:Number(m[2]) } : null;
 }
-async function nextControlNo(dept, opts={}){
-  const series = opts.series || "CN";       // "CN" for Inquiries
-  const sourceCol = opts.sourceCol || "inquiries";
+async function nextControlNo(dept){
   const now = new Date();
-  const key = `${series}-${QUOTE_PREFIX[dept] || "ADM"}-${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
-  // Self-heals if the counter ever drifted below what's already on a
-  // record in this series (e.g. reset by hand) — never issues a number at
+  const key = `CN-${QUOTE_PREFIX[dept] || "ADM"}-${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+  // Self-heals if the counter ever drifted below what's already on an
+  // inquiry in this series (e.g. reset by hand) — never issues a number at
   // or below the highest one already in use.
-  const used = rows(sourceCol).map(i=>controlNoSeriesOf(i.controlNo)).filter(x=>x && x.key===key).map(x=>x.no);
+  const used = rows("inquiries").map(i=>controlNoSeriesOf(i.controlNo)).filter(x=>x && x.key===key).map(x=>x.no);
   const highestUsed = used.length ? Math.max(...used) : 0;
   let n = 1;
   await runTransaction(db, async tx=>{
@@ -6037,6 +6064,7 @@ async function submitForm(col,id){
   const S = SCHEMAS[col], vals = {}, errs = [];
   document.querySelectorAll("#modal-root [data-k]").forEach(el=>{
     const f = S.fields.find(x=>x.k===el.dataset.k);
+    if (f && f.type==="confirm"){ vals[el.dataset.k] = !!el.checked; return; }
     let v = el.value;
     if (f && (f.type==="money"||f.type==="number")) v = v==="" ? null : Number(v);
     vals[el.dataset.k] = v === "" ? null : v;
