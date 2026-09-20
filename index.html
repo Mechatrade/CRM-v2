@@ -1077,7 +1077,13 @@ const DEFAULT_SETTINGS = {
   companyTin: "",
   bankDetails: "",
   quoteTerms: "Prices are valid for 30 days from the date of issue.\nDelivery: to be confirmed upon receipt of purchase order.\nPayment: 50% down payment, balance upon delivery.",
-  fxRates: {}   // e.g. { USD: 56, EUR: 61 } — admin-set defaults for Product Costing's conversion rate
+  fxRates: {},   // e.g. { USD: 56, EUR: 61 } — admin-set defaults for Product Costing's conversion rate
+  // The correct upload destination per supplier document type — set once
+  // by an admin in Settings. Keyed by the same field key as the supplier
+  // schema (docSecDti, docBir2303, ...) so a document field can always
+  // find its own destination folder directly. Empty until an admin fills
+  // them in; the "Open destination folder" hint just stays hidden until then.
+  driveFolders: {}
 };
 const LOGO_PRINT = "./logo-print.png";
 
@@ -1402,6 +1408,8 @@ const SCHEMAS = {
       { k:"quotationId",   l:"Quotation",     type:"ref",    refTo:"quotations", table:true },
       { k:"dealId",        l:"Opportunity",   type:"ref",    refTo:"deals" },
       { k:"orderDate",     l:"Order date",    type:"date",   table:true },
+      { k:"poNumber",      l:"Customer PO no.", type:"text", table:true },
+      { k:"poDate",        l:"PO date",       type:"date" },
       { k:"deliveryDate",  l:"Delivery date", type:"date",   table:true },
       { k:"total",         l:"Order value",   type:"money",  table:true },
       { k:"status",        l:"Status",        type:"select", opts:["Processing","Ready for delivery","Delivered","Invoiced","Cancelled"], def:"Processing", table:true },
@@ -1425,12 +1433,22 @@ const SCHEMAS = {
   suppliers: {
     label:"Supplier", plural:"Suppliers", icon:"⬡", titleField:"name",
     fields:[
-      { k:"name",            l:"Supplier name",   type:"text",  req:true, table:true },
+      { k:"name",            l:"Registered Company Name", type:"text",  req:true, table:true },
       { k:"contactPerson",   l:"Contact person",  type:"text",  table:true },
-      { k:"phone",           l:"Phone",           type:"tel",   table:true },
+      { k:"position",        l:"Position",        type:"text" },
+      { k:"phone",           l:"Mobile Number",   type:"tel",   table:true },
       { k:"email",           l:"Email",           type:"email", table:true },
-      { k:"address",         l:"Address",         type:"text" },
+      { k:"address",         l:"Business Address", type:"text" },
       { k:"paymentTerms",    l:"Payment terms",   type:"text", table:true },
+      { k:"supplierType",    l:"Supplier Type",   type:"select",
+        opts:["Manufacturer","Distributor","Dealer","Service Provider","Other"], table:true },
+      { k:"_compliance",     l:"Compliance",       type:"compliance", table:true },
+      { k:"docSecDti",           l:"SEC/DTI Registration",              type:"url", fileLink:true },
+      { k:"docBir2303",          l:"BIR Form 2303",                     type:"url", fileLink:true },
+      { k:"docMayorsPermit",     l:"Mayor's/Business Permit",           type:"url", fileLink:true },
+      { k:"docDistributorCert",  l:"Authorized Distributor Certificate (if applicable)", type:"url", fileLink:true },
+      { k:"docCompanyProfile",   l:"Company Profile",                   type:"url", fileLink:true },
+      { k:"docBankDetails",      l:"Bank Details",                      type:"url", fileLink:true },
       { k:"lastCanvassDate", l:"Last canvassed on", type:"date", table:true },
       { k:"ownerId",         l:"Owner",           type:"ref",   refTo:"users", table:true, assignOnly:true },
       { k:"notes",           l:"Notes",           type:"textarea", full:true }
@@ -1556,6 +1574,31 @@ function lastMonths(n){
    of view just because it predates a role reassignment. */
 function effectiveDept(r){
   return state.users.get(r.ownerId)?.department || r.department || null;
+}
+/* Required supplier compliance fields — contact/registration info, plus
+   every SUPPLIER_DOCS entry marked required (all but the Distributor
+   Certificate, which only applies to some suppliers). Used both to gate
+   Sales Order conversion and to show a completeness badge wherever a
+   supplier is listed. */
+const SUPPLIER_REQUIRED_FIELDS = ["name","contactPerson","position","phone","email","address","paymentTerms","supplierType"];
+function supplierMissing(s){
+  if (!s) return ["Supplier record"];
+  const missing = SUPPLIER_REQUIRED_FIELDS.filter(k => !String(s[k]||"").trim())
+    .map(k => SCHEMAS.suppliers.fields.find(f=>f.k===k)?.l || k);
+  SUPPLIER_DOCS.filter(d=>d.req).forEach(d=>{
+    if (!String(s[d.k]||"").trim()) missing.push(d.l);
+  });
+  return missing;
+}
+function supplierComplianceComplete(s){ return supplierMissing(s).length === 0; }
+/* A small badge wherever a supplier is listed — lets anyone see at a
+   glance whether a supplier's compliance file is already on hand, well
+   before they'd ever hit the Sales Order conversion gate. */
+function supplierComplianceBadge(s){
+  const missing = supplierMissing(s);
+  return missing.length
+    ? `<span class="pill warn" title="${esc(missing.join(", "))} still needed">⚠ Incomplete (${missing.length})</span>`
+    : `<span class="pill accent">✓ Complete</span>`;
 }
 /* One-time repair: walks every department-bearing collection and corrects
    any record whose stored department doesn't match its owner's *current*
@@ -2522,6 +2565,7 @@ function cell(col,f,d){
       return `<span class="mono">${money(Number(d.value||0) * stageProb(d.stage)/100)}</span>`;
     return "—";
   }
+  if (f.type === "compliance") return supplierComplianceBadge(d);
   if (f.type === "links") return renderLinks(v);
   if (f.type === "money")  return `<span class="mono">${v?money(v):"—"}</span>`;
   if (f.type === "number") return `<span class="mono">${v??"—"}</span>`;
@@ -2530,6 +2574,9 @@ function cell(col,f,d){
     if (f.refTo === "users") return personCell(v);
     return esc(refLabel(f.refTo, v, d));
   }
+  if (f.type === "url" && f.fileLink)
+    return v ? `<a href="${esc(v)}" target="_blank" rel="noopener" class="pill accent">📄 View file</a>`
+             : `<span style="color:var(--faint)">Not uploaded</span>`;
   if (f.type === "email" && v) return `<a href="mailto:${esc(v)}">${esc(v)}</a>`;
   if (f.type === "url"   && v) return `<a href="${esc(v)}" target="_blank" rel="noopener">${esc(v)}</a>`;
   if (f.type === "select") return pillFor(f.k, v);
@@ -3396,6 +3443,136 @@ function inquiryWinnerName(inquiry, itemIdx){
   if (wi === null || wi === undefined) return "—";
   return (inquiry.suppliers||[])[wi]?.name || "—";
 }
+/* Every distinct supplier behind a quotation's costing sheet(s) — resolved
+   to an actual Suppliers-catalog record where one already exists by name,
+   or left unresolved (record: null, just the typed name) if this supplier
+   has never been added to the catalog at all. */
+function suppliersBehindQuote(costingSheets){
+  const seen = new Set(); const out = [];
+  costingSheets.forEach(c=>{
+    const name = c.supplierName;
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    const rec = c.supplierId ? state.data.suppliers.get(c.supplierId) : findSupplierRecord(name);
+    out.push({ name, record: rec || null });
+  });
+  return out;
+}
+/* A compact field renderer just for the compliance gate — deliberately not
+   reusing fieldHTML(), since that generates a fixed "f-<key>" id and this
+   screen can show several suppliers at once, each needing its own set of
+   the same field ids. */
+function complianceFieldHTML(prefix, f, v){
+  const id = `${prefix}-${f.k}`;
+  if (f.type === "select"){
+    return `<div class="field"><label for="${id}">${esc(f.l)}</label>
+      <select id="${id}" data-ck="${f.k}"><option value="">—</option>
+        ${f.opts.map(o=>`<option value="${esc(o)}"${o===v?" selected":""}>${esc(o)}</option>`).join("")}</select></div>`;
+  }
+  const t = f.type==="url" ? "url" : f.type==="email" ? "email" : f.type==="tel" ? "tel" : "text";
+  const ph = f.fileLink ? ' placeholder="Paste the Google Drive share-link, after uploading it there"' : "";
+  const folder = f.fileLink ? state.settings.driveFolders?.[f.k] : null;
+  return `<div class="field${f.full?" full":""}">
+    <label for="${id}">${esc(f.l)}</label>
+    ${folder?`<a href="${esc(folder)}" target="_blank" rel="noopener" class="hint" style="display:inline-block;margin-bottom:5px">📁 Open destination folder — upload it here first</a><br>`:""}
+    <input id="${id}" data-ck="${f.k}" type="${t}" value="${esc(v||"")}"${ph}>
+  </div>`;
+}
+/* The fields the compliance gate actually asks for — required contact/
+   registration fields, plus every SUPPLIER_DOCS entry (required and
+   optional both shown, so the form matches the Supplier record exactly). */
+function complianceGateFields(){
+  return SCHEMAS.suppliers.fields.filter(f=>
+    SUPPLIER_REQUIRED_FIELDS.includes(f.k) || SUPPLIER_DOCS.some(d=>d.k===f.k));
+}
+/* Entry point for "Convert to Sales Order" — checks every supplier behind
+   the quotation's costing sheet(s) first. Complete already: goes straight
+   to the existing item-selection screen, unchanged. Anything incomplete:
+   opens the completion gate instead, which saves straight back to the
+   Suppliers catalog and only then hands off to that same screen — so this
+   never needs doing twice for the same supplier. */
+function startSalesOrderConversion(quotationId){
+  const q = state.data.quotations.get(quotationId); if (!q) return;
+  const { costingSheets } = traceQuoteChain(q);
+  const entries = suppliersBehindQuote(costingSheets);
+  const incomplete = entries.filter(e => !supplierComplianceComplete(e.record));
+  if (incomplete.length) openSupplierComplianceGate(quotationId, incomplete);
+  else openSalesOrderConvertPreview(quotationId);
+}
+function openSupplierComplianceGate(quotationId, entries){
+  const q = state.data.quotations.get(quotationId); if (!q) return;
+  const compFields = complianceGateFields();
+  modal(`
+    <div class="modal-h">
+      <div><div class="eyebrow">Complete supplier information</div><h3>${esc(q.quoteNo)}</h3></div>
+      <button class="x" data-close aria-label="Close">×</button></div>
+    <div class="modal-b">
+      <p style="font-size:12.5px;color:var(--muted);margin-top:0">
+        ${entries.length>1
+          ? `This quotation involves ${entries.length} suppliers, and at least one doesn't have a complete file yet. Fill in what's missing below — it saves straight to that supplier's own record in the Suppliers catalog, so this only needs doing once.`
+          : `This supplier doesn't have a complete file on record yet. Fill in what's missing below — it saves straight to their record in the Suppliers catalog, so this only needs doing once.`}
+      </p>
+      ${entries.map((e,i)=>{
+        const missing = supplierMissing(e.record);
+        return `
+        <div style="border:1px solid var(--line-2);border-radius:8px;padding:14px 16px;margin-bottom:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <strong style="font-size:14px">${esc(e.name)}</strong>
+            ${e.record ? `<span class="pill warn">⚠ ${missing.length} field${missing.length===1?"":"s"} missing</span>`
+                        : `<span class="pill warn">⚠ Not yet in the Suppliers catalog</span>`}
+          </div>
+          <div class="fgrid">
+            ${compFields.map(f=> complianceFieldHTML(`sg-${i}`, f, e.record?.[f.k] ?? (f.k==="name"?e.name:""))).join("")}
+          </div>
+        </div>`;
+      }).join("")}
+    </div>
+    <div class="modal-f">
+      <div class="spacer"></div>
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn pri" id="sg-save">Save &amp; Continue</button>
+    </div>`, true);
+
+  $("#sg-save").onclick = async ()=>{
+    // Validate every required field, for every supplier, before saving any of them.
+    for (let i=0; i<entries.length; i++){
+      for (const f of compFields){
+        const required = SUPPLIER_REQUIRED_FIELDS.includes(f.k) || SUPPLIER_DOCS.find(d=>d.k===f.k)?.req;
+        if (!required) continue;
+        const el = document.querySelector(`#sg-${i}-${f.k}`);
+        if (!el?.value.trim()){
+          toast(`${entries[i].name}: ${f.l} is required.`, true);
+          return;
+        }
+      }
+    }
+    $("#sg-save").disabled = true;
+    try{
+      for (let i=0; i<entries.length; i++){
+        const e = entries[i];
+        const payload = {};
+        compFields.forEach(f=>{ payload[f.k] = document.querySelector(`#sg-${i}-${f.k}`)?.value.trim() || null; });
+        if (e.record) await updateDoc(doc(db,"suppliers",e.record.id), payload);
+        else await addDoc(collection(db,"suppliers"), {
+          ...payload, ownerId: myUid(), department: state.profile.department,
+          lastCanvassDate: todayISO(),
+          createdAt: serverTimestamp(), createdBy: myUid(), updatedAt: serverTimestamp()
+        });
+      }
+      toast("Supplier information saved.");
+      closeModal(true);
+      // Straight to the existing conversion screen — no need to re-check
+      // compliance here, since what was just saved is exactly what
+      // makes it complete, and no re-read of Firestore's own copy is
+      // needed to know that.
+      openSalesOrderConvertPreview(quotationId);
+    }catch(e){
+      $("#sg-save").disabled = false;
+      toast(e.message, true);
+    }
+  };
+}
+
 function openSalesOrderConvertPreview(quotationId){
   const q = state.data.quotations.get(quotationId); if (!q) return;
   if (q.ownerId !== myUid() && !isAdmin()){ toast("Only the quotation's own owner (or an admin) can convert it.", true); return; }
@@ -3456,18 +3633,30 @@ function openSalesOrderConvertPreview(quotationId){
         </div>`;}).join("")
         : `<p style="font-size:12.5px;color:var(--muted)">No Approved costing sheet found sharing this Control No.</p>`}
 
-      <div class="card-h" style="padding-left:0;padding-right:0;margin-top:18px"><h3>Quotation items</h3></div>
+      <div class="card-h" style="padding-left:0;padding-right:0;margin-top:18px">
+        <h3>Items to include</h3><div class="spacer"></div>
+        <span class="eyebrow">match this to the customer's actual PO</span></div>
+      <p style="font-size:12.5px;color:var(--muted);margin:0 0 8px">Uncheck anything the PO doesn't cover, and adjust quantities where the PO ordered less than quoted — the Sales Order will only include what you leave here. The quotation itself is never changed.</p>
       <table class="items">
-        <thead><tr><th>Description</th><th style="text-align:right">Qty</th>
+        <thead><tr><th style="width:26px"></th><th>Description</th><th style="text-align:right;width:80px">Qty</th>
           <th style="text-align:right">Unit price</th><th style="text-align:right">Amount</th></tr></thead>
-        <tbody>${items.map(i=>`<tr>
+        <tbody id="so-items">${items.map((i,idx)=>`<tr data-so-item="${idx}">
+          <td><input type="checkbox" data-so-chk checked></td>
           <td style="padding:7px 6px">${descAppHTML(i.desc)}</td>
-          <td class="num" style="padding:7px 6px">${i.qty}</td>
+          <td class="num" style="padding:7px 6px"><input type="number" min="0" step="any" data-so-qty value="${esc(i.qty)}" style="width:70px;text-align:right"></td>
           <td class="num" style="padding:7px 6px">${money(i.price)}</td>
-          <td class="num" style="padding:7px 6px">${money(i.qty*i.price)}</td>
+          <td class="num" style="padding:7px 6px" data-so-amt>${money(i.qty*i.price)}</td>
         </tr>`).join("")}</tbody>
       </table>
-      <div class="totals"><div class="row grand"><span>Total</span><span>${money(q.total)}</span></div></div>
+      <div class="totals"><div class="row grand"><span>Total</span><span id="so-total">${money(q.total)}</span></div></div>
+
+      <div class="eyebrow" style="margin:18px 0 8px">Customer PO reference</div>
+      <div class="fgrid">
+        <div class="field"><label for="so-po-no">PO number</label>
+          <input id="so-po-no" placeholder="e.g. PO-2026-0456"></div>
+        <div class="field"><label for="so-po-date">PO date</label>
+          <input id="so-po-date" type="date"></div>
+      </div>
     </div>
     <div class="modal-f">
       <button class="btn" id="so-doc-preview">Preview document</button>
@@ -3478,8 +3667,47 @@ function openSalesOrderConvertPreview(quotationId){
 
   const chain = { inquiry, costingSheets, account, contact };
   wireModalOpens($("#modal-root"));
-  $("#so-doc-preview").onclick = ()=> openSalesOrderPreview(buildSalesOrderSnapshot(q, chain));
-  $("#so-confirm").onclick = ()=> convertQuoteToSalesOrder(q, chain);
+
+  function recalcSO(){
+    let total = 0;
+    document.querySelectorAll('#so-items tr[data-so-item]').forEach(tr=>{
+      const idx = Number(tr.dataset.soItem);
+      const chk = tr.querySelector('[data-so-chk]');
+      const qtyInp = tr.querySelector('[data-so-qty]');
+      qtyInp.disabled = !chk.checked;
+      tr.style.opacity = chk.checked ? "1" : ".45";
+      const amt = chk.checked ? Number(qtyInp.value||0) * Number(items[idx].price||0) : 0;
+      tr.querySelector('[data-so-amt]').textContent = money(amt);
+      total += amt;
+    });
+    $("#so-total").textContent = money(total);
+  }
+  document.querySelectorAll('#so-items [data-so-chk]').forEach(el=> el.addEventListener("change", recalcSO));
+  document.querySelectorAll('#so-items [data-so-qty]').forEach(el=> el.addEventListener("input", recalcSO));
+
+  // Keeps each surviving item's original index so it still lines up with
+  // the right winning supplier below, even once some rows are excluded.
+  function collectSOSelection(){
+    const selItems = [];
+    document.querySelectorAll('#so-items tr[data-so-item]').forEach(tr=>{
+      const idx = Number(tr.dataset.soItem);
+      if (!tr.querySelector('[data-so-chk]').checked) return;
+      const qty = Number(tr.querySelector('[data-so-qty]').value||0);
+      if (qty <= 0) return;
+      selItems.push({ ...items[idx], qty, _origIndex: idx });
+    });
+    return { items: selItems, poNumber: $("#so-po-no").value.trim()||null, poDate: $("#so-po-date").value||null };
+  }
+  $("#so-doc-preview").onclick = ()=>{
+    const sel = collectSOSelection();
+    if (!sel.items.length){ toast("Include at least one item.", true); return; }
+    openSalesOrderPreview(buildSalesOrderSnapshot(q, chain, sel));
+  };
+  $("#so-confirm").onclick = ()=>{
+    const sel = collectSOSelection();
+    if (!sel.items.length){ toast("Include at least one item.", true); return; }
+    convertQuoteToSalesOrder(q, chain, sel);
+  };
 }
 /* Matches a Costing sheet's free-text supplier name against the actual
    Supplier catalog (Suppliers menu) — same name-matching the catalog
@@ -3503,10 +3731,12 @@ function supplierLinkHTML(name, knownId){
 /* Shared by the pre-conversion "Preview document" button and the actual
    save, so what you see before confirming is exactly what gets written —
    no separate code path that could quietly drift out of sync. */
-function buildSalesOrderSnapshot(q, chain){
+function buildSalesOrderSnapshot(q, chain, sel){
   const { inquiry, costingSheets, account, contact } = chain;
-  const items = (q.items||[]).map((it,i)=>{
-    const supplierName = inquiry ? inquiryWinnerName(inquiry, i) : (costingSheets[0]?.supplierName || null);
+  const srcItems = sel?.items || (q.items||[]).map((it,i)=>({ ...it, _origIndex:i }));
+  const items = srcItems.map(it=>{
+    const origIdx = it._origIndex ?? 0;
+    const supplierName = inquiry ? inquiryWinnerName(inquiry, origIdx) : (costingSheets[0]?.supplierName || null);
     return {
       desc: it.desc||"", qty: it.qty||0, price: it.price||0,
       supplierName, supplierId: findSupplierRecord(supplierName)?.id || null
@@ -3537,23 +3767,28 @@ function buildSalesOrderSnapshot(q, chain){
     contactName: contact ? titleOf("contacts",contact) : null,
     phone: contact?.phone||account?.phone||null, email: contact?.email||null
   };
+  // The order's own total — only what's actually included here, which can
+  // be less than the full quotation's total once items are excluded or
+  // quantities reduced to match a partial PO.
+  const total = items.reduce((s,it)=>s+Number(it.qty||0)*Number(it.price||0),0);
   return {
     orderNo: q.quoteNo ? `SO-${q.quoteNo}` : `SO-${Date.now()}`,
     controlNo: q.controlNo || null,
     accountId: q.accountId || null, quotationId: q.id, dealId: q.dealId || null,
-    orderDate: todayISO(), total: Number(q.total || 0) || null, status:"Processing",
+    orderDate: todayISO(), total: total || null, status:"Processing",
+    poNumber: sel?.poNumber || null, poDate: sel?.poDate || null,
     ownerId: q.ownerId, items, suppliers, billedTo
   };
 }
 /* The actual write — a frozen snapshot of items, suppliers, and billing
    info as of conversion time, so the Sales Order still reads correctly
    even if the underlying Inquiry/Costing/Account records change later. */
-async function convertQuoteToSalesOrder(q, chain){
+async function convertQuoteToSalesOrder(q, chain, sel){
   if (q.ownerId !== myUid() && !isAdmin()) return toast("Only the quotation's own owner (or an admin) can convert it.", true);
   if (rows("salesorders").some(so=>so.quotationId===q.id)) return toast("Already converted.", true);
   $("#so-confirm").disabled = true;
   try{
-    const snapshot = buildSalesOrderSnapshot(q, chain);
+    const snapshot = buildSalesOrderSnapshot(q, chain, sel);
     await addDoc(collection(db,"salesorders"), {
       ...snapshot,
       department: state.profile.department,
@@ -4888,6 +5123,18 @@ const LISTS = [
   { k:"channels",    l:"Campaign channels", h:"Marketing channel options." },
   { k:"salesPersons",l:"Sales Persons", h:"Names only, not CRM logins — tags which Sales Person's customer this is." }
 ];
+// The supplier compliance documents — shared by Settings (destination
+// folder per type), the Supplier form, and the completeness check run at
+// Sales Order conversion time. Only the Distributor Certificate is
+// optional; the rest are required for a supplier to count as "complete".
+const SUPPLIER_DOCS = [
+  { k:"docSecDti",          l:"SEC/DTI Registration",                     req:true  },
+  { k:"docBir2303",         l:"BIR Form 2303",                            req:true  },
+  { k:"docMayorsPermit",    l:"Mayor's/Business Permit",                  req:true  },
+  { k:"docDistributorCert", l:"Authorized Distributor Certificate",       req:false },
+  { k:"docCompanyProfile",  l:"Company Profile",                         req:true  },
+  { k:"docBankDetails",     l:"Bank Details",                            req:true  }
+];
 function seriesPanel(){
   const audit = seriesAudit();
   if (!audit.length) return `<p style="font-size:12.5px;color:var(--muted);margin:0">
@@ -4996,6 +5243,18 @@ function viewSettings(){
     </div>
   </div>
 
+  <div class="eyebrow" style="margin:24px 0 8px">Supplier document destination folders</div>
+  <div class="card" style="max-width:760px;padding:18px 20px">
+    <p class="note" style="margin:0 0 12px">The Google Drive folder each document type should actually be uploaded
+      to, so everyone files things in the same place — not a personal or random link. Whoever completes a
+      supplier's compliance info sees an "Open destination folder" link per document, pointing here. Leave any of
+      these blank and that hint just won't show for that document type.</p>
+    ${SUPPLIER_DOCS.map(dd=>`<div class="field full" style="margin-bottom:14px">
+      <label for="s-folder-${dd.k}">${esc(dd.l)}${dd.req?"":" (optional)"}</label>
+      <input id="s-folder-${dd.k}" value="${esc(s.driveFolders?.[dd.k]||"")}" placeholder="Google Drive folder link">
+    </div>`).join("")}
+  </div>
+
   <div class="eyebrow" style="margin:24px 0 8px">Data repair</div>
   <div class="card" style="max-width:760px;padding:18px 20px">
     <p class="note" style="margin:0 0 12px">A record's department is set once, from its owner's department at the
@@ -5029,7 +5288,7 @@ function wireView(){
     setRoute(spec.col);
   });
   v.querySelectorAll("[data-convert]").forEach(el=> el.onclick = ()=> openConvert(el.dataset.convert));
-  v.querySelectorAll("[data-convert-so]").forEach(el=> el.onclick = ()=> openSalesOrderConvertPreview(el.dataset.convertSo));
+  v.querySelectorAll("[data-convert-so]").forEach(el=> el.onclick = ()=> startSalesOrderConversion(el.dataset.convertSo));
   v.querySelectorAll("[data-proceed]").forEach(el=> el.onclick = e=>{
     e.stopPropagation();
     const [col,pid] = el.dataset.proceed.split(":");
@@ -5457,6 +5716,8 @@ async function saveSettings(){
       "companyWeb","companyTin","bankDetails","quoteTerms"].map(k=>[k, $("#s-"+k).value])),
     fxRates: Object.fromEntries(["USD","CNY","EUR","JPY","SGD","KRW","TWD"]
       .map(c=>[c, Number($("#s-fx-"+c).value||0)]).filter(([,v])=>v>0)),
+    driveFolders: Object.fromEntries(SUPPLIER_DOCS
+      .map(dd=>[dd.k, $("#s-folder-"+dd.k).value.trim()]).filter(([,v])=>v)),
     ...Object.fromEntries(LISTS.map(L=>[L.k, $("#s-"+L.k).value.split("\n").map(s=>s.trim()).filter(Boolean)]))
   };
   try{ await setDoc(doc(db,"settings","config"), payload, { merge:true }); toast("Settings saved"); }
@@ -5508,7 +5769,7 @@ function wireModalOpens(root){
 }
 
 function fieldHTML(col,f,d,isNew){
-  if (f.type === "computed") return "";
+  if (f.type === "computed" || f.type === "compliance") return "";
   // A brand-new task is inherently "New" with nothing to report yet — no
   // point asking for Task Status/Outcome/Outcome Notes/Next Action before
   // the task has actually been worked. Those show up once you edit it later
@@ -5598,7 +5859,14 @@ function fieldHTML(col,f,d,isNew){
   }
   else {
     const t = f.type==="money"||f.type==="number" ? "number" : f.type==="url" ? "url" : f.type;
-    input = `<input id="${id}" data-k="${f.k}" type="${t}"${f.type==="money"?' step="any" min="0"':""} value="${esc(v)}">`;
+    const ph = f.fileLink ? ' placeholder="Paste the Google Drive share-link, after uploading it there"' : "";
+    input = `<input id="${id}" data-k="${f.k}" type="${t}"${f.type==="money"?' step="any" min="0"':""} value="${esc(v)}"${ph}>`;
+    if (f.fileLink){
+      const folder = state.settings.driveFolders?.[f.k];
+      input = (folder
+        ? `<a href="${esc(folder)}" target="_blank" rel="noopener" class="hint" style="display:inline-block;margin-bottom:5px">📁 Open destination folder — upload it here first</a><br>`
+        : "") + input;
+    }
   }
   return `<div class="field${f.full||f.type==="textarea"?" full":""}">${lab}${input}</div>`;
 }
@@ -6006,6 +6274,8 @@ function openSalesOrderDetail(id){
         <div class="r"><div class="k">Quotation</div><div class="v">${d.quotationId ? `<span class="lnk" data-open="quotations:${d.quotationId}">${esc(recordTitle("quotations",d.quotationId))}</span>` : "—"}</div></div>
         <div class="r"><div class="k">Status</div><div class="v">${canWrite(d,"salesorders") ? statusSelect("salesorders", d, S.fields.find(f=>f.k==="status").opts) : pillFor("status",d.status)}</div></div>
         <div class="r"><div class="k">Order date</div><div class="v mono" style="font-size:13px">${fmtDate(d.orderDate)}</div></div>
+        ${d.poNumber ? `<div class="r"><div class="k">Customer PO no.</div><div class="v">${esc(d.poNumber)}</div></div>` : ""}
+        ${d.poDate ? `<div class="r"><div class="k">PO date</div><div class="v mono" style="font-size:13px">${fmtDate(d.poDate)}</div></div>` : ""}
         <div class="r"><div class="k">Delivery date</div><div class="v mono" style="font-size:13px">${d.deliveryDate?fmtDate(d.deliveryDate):"—"}</div></div>
         <div class="r"><div class="k">Order value</div><div class="v">${money(d.total)}</div></div>
         <div class="r"><div class="k">Owner</div><div class="v">${esc(userName(d.ownerId))}</div></div>
@@ -8182,7 +8452,7 @@ function openQuoteDetail(id){
   $("#q-view").onclick = ()=> openQuotePreview(q);
   $("#q-print").onclick = ()=> printQuote(id);
   const convBtn = $("#q-convert-so");
-  if (convBtn) convBtn.onclick = ()=>{ closeModal(true); openSalesOrderConvertPreview(id); };
+  if (convBtn) convBtn.onclick = ()=>{ closeModal(true); startSalesOrderConversion(id); };
 }
 
 /* The quotation document. Preview and print render exactly the same HTML,
@@ -8836,6 +9106,8 @@ function salesOrderDocHTML(so){
         <table>
           <tr><td>Order no.</td><td class="r"><strong>${esc(so.orderNo||"—")}</strong></td></tr>
           <tr><td>Order date</td><td class="r">${fmtDate(so.orderDate)}</td></tr>
+          ${so.poNumber ? `<tr><td>Customer PO no.</td><td class="r">${esc(so.poNumber)}</td></tr>` : ""}
+          ${so.poDate ? `<tr><td>PO date</td><td class="r">${fmtDate(so.poDate)}</td></tr>` : ""}
           ${so.deliveryDate ? `<tr><td>Delivery date</td><td class="r">${fmtDate(so.deliveryDate)}</td></tr>` : ""}
           ${so.quotationId ? `<tr><td>Quote no.</td><td class="r">${esc(recordTitle("quotations",so.quotationId))}</td></tr>` : ""}
         </table>
