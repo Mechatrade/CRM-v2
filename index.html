@@ -3473,11 +3473,10 @@ function complianceFieldHTML(prefix, f, v){
   }
   if (f.type === "confirm"){
     const folder = state.settings.driveFolders?.[f.k];
-    return `<div class="field full">
-      ${folder?`<a href="${esc(folder)}" target="_blank" rel="noopener" class="hint" style="display:inline-block;margin-bottom:6px">📁 Open destination folder — upload it here first</a><br>`:""}
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:500">
-        <input type="checkbox" id="${id}" data-ck="${f.k}"${v?" checked":""}>
-        ${esc(f.l)} — Confirmed uploaded
+    return `<div class="field full" style="margin-bottom:14px">
+      ${folder?`<a href="${esc(folder)}" target="_blank" rel="noopener" class="hint" style="display:block;margin-bottom:8px">📁 Open destination folder — upload it here first</a>`:""}
+      <label style="cursor:pointer;font-weight:500;display:block">
+        <input type="checkbox" id="${id}" data-ck="${f.k}"${v?" checked":""} style="width:auto;vertical-align:middle;margin-right:8px">${esc(f.l)} — Confirmed uploaded
       </label>
     </div>`;
   }
@@ -5835,10 +5834,10 @@ function fieldHTML(col,f,d,isNew){
   if (f.type === "textarea") input = `<textarea id="${id}" data-k="${f.k}">${esc(v)}</textarea>`;
   else if (f.type === "confirm"){
     const folder = state.settings.driveFolders?.[f.k];
-    const box = `<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400">
-      <input type="checkbox" id="${id}" data-k="${f.k}"${v?" checked":""}> Confirmed uploaded</label>`;
+    const box = `<label style="cursor:pointer;font-weight:400;display:block">
+      <input type="checkbox" id="${id}" data-k="${f.k}"${v?" checked":""} style="width:auto;vertical-align:middle;margin-right:8px">Confirmed uploaded</label>`;
     input = (folder
-      ? `<a href="${esc(folder)}" target="_blank" rel="noopener" class="hint" style="display:inline-block;margin-bottom:6px">📁 Open destination folder — upload it here first</a><br>`
+      ? `<a href="${esc(folder)}" target="_blank" rel="noopener" class="hint" style="display:block;margin-bottom:8px">📁 Open destination folder — upload it here first</a>`
       : "") + box;
   }
   else if (f.type === "select"){
