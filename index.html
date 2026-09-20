@@ -2932,7 +2932,7 @@ function myQuotationSnapshot(){
           const tag = quoteFollowUp(days);
           return `<tr>
             <td><span class="lnk" data-open="quotations:${q.id}">${esc(q.quoteNo||q.title||"Quotation")}</span>
-              <div style="font-size:11.5px;color:var(--muted)">${esc(recordTitle("accounts",q.accountId))}</div></td>
+              <div style="font-size:11.5px;color:var(--muted)">${esc(customerLabel(q))}</div></td>
             <td class="num">${money(q.total)}</td>
             <td class="num"><span class="pill" title="${esc(tag.hint)}">${tag.emoji} ${esc(tag.label)}</span>
               <div style="font-size:10.5px;color:var(--muted);margin-top:2px">${days}d since sent</div></td>
@@ -5911,8 +5911,8 @@ async function proceedRecord(col, id){
       toast("Tick a Winner for at least one item (in each supplier's \"Items quoted\" list) before proceeding.", true);
       return;
     }
-    const accountId = await resolveInquiryAccountId(d);
-    if (!accountId) toast("This inquiry isn't linked to a Customer — add one on the costing sheet, or it won't carry through to the quotation.", true);
+    const { accountId, leadId } = await resolveInquiryCustomer(d);
+    if (!accountId && !leadId) toast("This inquiry isn't linked to a Customer or Lead — add one on the costing sheet, or it won't carry through to the quotation.", true);
     const queue = combo.usedSuppliers.map(supIdx=>{
       const sup = suppliers[supIdx] || {};
       const costItems = items
@@ -5932,7 +5932,7 @@ async function proceedRecord(col, id){
       const { sup, costItems } = queue[i];
       openForm("costing", null, {
         controlNo: d.controlNo || null, inquiryId: id,
-        accountId,
+        accountId, leadId,
         supplierName: sup.name || "", supplierContact: sup.contact || "",
         shippingCost: sup.shippingCost || null,
         purchaseType: sup.purchaseType || "International",
@@ -5971,14 +5971,14 @@ async function proceedRecord(col, id){
     }
     const items = siblings.flatMap(c=> costingItemQuotes(c));
     const first = siblings[0] || d;
-    if (!first.accountId) toast("This costing sheet has no Customer linked — the quotation will open without one; add it before sending.", true);
+    if (!first.accountId && !first.leadId) toast("This costing sheet has no Customer or Lead linked — the quotation will open without one; add it before sending.", true);
     // The Subject line needs one line, not the item's own multi-line
     // Brand/Model/Description block — collapse it just for this purpose.
     const oneLine = s => String(s||"").split("\n").filter(Boolean).join(" — ");
     const title = items.length===1 ? oneLine(items[0].desc) : `${items.length} items — ${d.controlNo}`;
     openQuoteForm(null, {
       controlNo: d.controlNo || null, costingId: id,
-      accountId: first.accountId || null, dealId: first.dealId || null,
+      accountId: first.accountId || null, leadId: first.leadId || null, dealId: first.dealId || null,
       title: `Quotation for ${title}`,
       ownerId: d.ownerId,
       items
@@ -6236,16 +6236,15 @@ async function cascadeLeadConversion(leadId, accountId){
     }
   }
 }
-/* Resolves an Inquiry's linked Account for handoff to Costing — normally
-   just relatedType "Account" already pointing at the right record. As a
-   safety net, if it's still pointing at a Lead that's already Converted
-   (the cascade above should already have fixed this, but an inquiry
-   created after conversion could still reference the stale Lead), this
-   falls back to a company-name match and permanently repairs the
-   inquiry's own relatedType/relatedId, so it's resolved correctly from
-   then on rather than needing this fallback every time. */
-async function resolveInquiryAccountId(inq){
-  if (inq.relatedType === "Account" && inq.relatedId) return inq.relatedId;
+/* Resolves who an Inquiry's Costing/Quotation should be for — an Account
+   if it's linked to one (self-healing a stale reference to an already-
+   Converted Lead the cascade above should have already fixed, same as
+   before), or the Lead itself when it hasn't converted yet. Costing and
+   Quotation show whichever comes back: the normal editable Account picker
+   when there's a real account, or a read-only "from this Lead" note when
+   there isn't one yet to link to. */
+async function resolveInquiryCustomer(inq){
+  if (inq.relatedType === "Account" && inq.relatedId) return { accountId: inq.relatedId, leadId: null };
   if (inq.relatedType === "Lead" && inq.relatedId){
     const lead = state.data.leads.get(inq.relatedId);
     if (lead?.status === "Converted" && lead.company){
@@ -6257,11 +6256,21 @@ async function resolveInquiryAccountId(inq){
             relatedType:"Account", relatedId:match.id, updatedAt: serverTimestamp()
           });
         }catch(e){ console.warn("self-heal inquiry account link", e); }
-        return match.id;
+        return { accountId: match.id, leadId: null };
       }
     }
+    return { accountId: null, leadId: inq.relatedId };   // still a lead, not yet converted
   }
-  return null;
+  return { accountId: null, leadId: null };
+}
+/* A short "who this is for" label wherever an Account is expected but a
+   not-yet-converted Lead might be all there is — the Costing/Quotation
+   detail views and printable documents all use this so a Lead-sourced
+   sheet never just shows a blank customer. */
+function customerLabel(d){
+  if (d.accountId) return recordTitle("accounts", d.accountId);
+  if (d.leadId) return `${recordTitle("leads", d.leadId)} (Lead — not yet a customer)`;
+  return "—";
 }
 
 /* Everything that points at a record, so deleting can't leave orphans
@@ -7232,10 +7241,12 @@ function openCostingForm(id, preset){
         <div class="field"><label for="co-acct">Customer</label>
           <select id="co-acct"><option value="">—</option>
             ${accts.map(a=>`<option value="${a.id}"${a.id===d.accountId?" selected":""}>${esc(a.name)}</option>`).join("")}</select>
-          ${d.inquiryId && !d.accountId ? `<span class="hint" style="color:var(--warn)">This sheet came from an inquiry with no Customer linked — pick one, or it won't carry through to the quotation.</span>` : ""}</div>
+          ${d.leadId && !d.accountId ? `<span class="hint">From Lead: <strong>${esc(recordTitle("leads", d.leadId))}</strong> — not yet a customer account. Pick one above once converted, or leave as is.</span>` : ""}
+          ${d.inquiryId && !d.accountId && !d.leadId ? `<span class="hint" style="color:var(--warn)">This sheet came from an inquiry with no Customer or Lead linked — pick one, or it won't carry through to the quotation.</span>` : ""}</div>
         <div class="field"><label for="co-deal">Opportunity</label>
           <select id="co-deal"><option value="">— None —</option>
             ${dls.map(x=>`<option value="${x.id}"${x.id===d.dealId?" selected":""}>${esc(x.title)}</option>`).join("")}</select></div>
+        <input type="hidden" id="co-leadid" value="${esc(d.leadId||"")}">
         <div class="field"><label for="co-owner">Owner</label>
           <select id="co-owner"${isManager()?"":" disabled"}>
             ${isManager()?ownerOptions(d.ownerId||myUid()):`<option value="${myUid()}">${esc(state.profile.displayName||"You")}</option>`}</select></div>
@@ -7547,6 +7558,7 @@ function openCostingForm(id, preset){
       controlNo: ($("#co-control")?.value.trim() || d.controlNo || null),
       inquiryId: d.inquiryId || null,
       accountId: $("#co-acct").value || null, dealId: $("#co-deal").value || null,
+      leadId: $("#co-acct").value ? null : ($("#co-leadid")?.value || null),
       accountManagerId: state.data.accounts.get($("#co-acct").value)?.accountManagerId || null,
       salesPerson: state.data.accounts.get($("#co-acct").value)?.salesPerson || null,
       ownerId, department: dept,
@@ -7632,7 +7644,7 @@ function openCostingDetail(id){
     <div class="modal-b">
       <div class="det">
         ${d.controlNo ? `<div class="r"><div class="k">Control No.</div><div class="v mono" style="font-size:13px">${esc(d.controlNo)}</div></div>` : ""}
-        <div class="r"><div class="k">Customer</div><div class="v">${esc(recordTitle("accounts",d.accountId))}</div></div>
+        <div class="r"><div class="k">Customer</div><div class="v">${esc(customerLabel(d))}</div></div>
         <div class="r"><div class="k">Status</div><div class="v">${pillFor("status",d.status)}</div></div>
         <div class="r"><div class="k">Supplier</div><div class="v">${supplierLinkHTML(d.supplierName, d.supplierId)}</div></div>
         <div class="r"><div class="k">Contact person</div><div class="v">${esc(d.supplierContact||"—")}</div></div>
@@ -7781,7 +7793,9 @@ function openQuoteForm(id, preset){
           <select id="q-acct"><option value="">—</option>
             ${q.accountId && !accts.some(a=>a.id===q.accountId)
               ? `<option value="" selected>— deleted customer, choose again —</option>`:""}
-            ${accts.map(a=>`<option value="${a.id}"${a.id===q.accountId?" selected":""}>${esc(a.name)}</option>`).join("")}</select></div>
+            ${accts.map(a=>`<option value="${a.id}"${a.id===q.accountId?" selected":""}>${esc(a.name)}</option>`).join("")}</select>
+          ${q.leadId && !q.accountId ? `<span class="hint">From Lead: <strong>${esc(recordTitle("leads", q.leadId))}</strong> — not yet a customer account. Pick one above once converted, or leave as is.</span>` : ""}</div>
+        <input type="hidden" id="q-leadid" value="${esc(q.leadId||"")}">
         <div class="field"><label for="q-contact">Attention to</label>
           <select id="q-contact"></select>
           <span class="hint" id="q-contact-hint"></span></div>
@@ -7957,7 +7971,8 @@ function openQuoteForm(id, preset){
   function draftFromForm(){
     return {
       quoteNo:$("#q-no").value.trim() || "—", title:$("#q-title").value.trim(),
-      accountId:$("#q-acct").value||null, contactId:$("#q-contact").value||null,
+      accountId:$("#q-acct").value||null, leadId: $("#q-acct").value ? null : ($("#q-leadid")?.value || null),
+      contactId:$("#q-contact").value||null,
       dealId:$("#q-deal").value||null, status:$("#q-status").value,
       issueDate:$("#q-issue").value||null, validUntil:$("#q-valid").value||null,
       quoteType:$("#q-type").value||null,
@@ -8007,7 +8022,8 @@ function openQuoteForm(id, preset){
     const ownerId = isManager() ? ($("#q-owner").value || myUid()) : (q.ownerId || myUid());
     const payload = {
       title:$("#q-title").value.trim(),
-      accountId:$("#q-acct").value||null, contactId:$("#q-contact").value||null,
+      accountId:$("#q-acct").value||null, leadId: $("#q-acct").value ? null : ($("#q-leadid")?.value || null),
+      contactId:$("#q-contact").value||null,
       dealId:$("#q-deal").value||null, status:$("#q-status").value,
       issueDate:$("#q-issue").value||null, validUntil:$("#q-valid").value||null,
       quoteType:$("#q-type").value||null,
@@ -8119,7 +8135,7 @@ function openQuoteDetail(id){
       <div class="det">
         <div class="r full"><div class="k">Subject</div><div class="v">${esc(q.title||"—")}</div></div>
         ${q.controlNo ? `<div class="r"><div class="k">Control No.</div><div class="v mono" style="font-size:13px">${esc(q.controlNo)}</div></div>` : ""}
-        <div class="r"><div class="k">Customer</div><div class="v">${esc(recordTitle("accounts",q.accountId))}</div></div>
+        <div class="r"><div class="k">Customer</div><div class="v">${esc(customerLabel(q))}</div></div>
         <div class="r"><div class="k">Attention to</div><div class="v">${esc(recordTitle("contacts",q.contactId))}</div></div>
         <div class="r"><div class="k">Status</div><div class="v">${pillFor("status",st)}</div></div>
         <div class="r"><div class="k">Owner</div><div class="v">${esc(userName(q.ownerId))}</div></div>
@@ -8351,7 +8367,7 @@ function costingDocHTML(d){
     <div class="parties">
       <div>
         <div class="cap">Customer</div>
-        <div class="who">${esc(recordTitle("accounts",d.accountId) || "—")}</div>
+        <div class="who">${esc(customerLabel(d))}</div>
       </div>
       <div>
         <div class="cap">Supplier</div>
@@ -8659,7 +8675,7 @@ function quoteDocHTML(q){
     <div class="parties">
       <div>
         <div class="cap">Billed to</div>
-        <div class="who">${esc(acct?.name || "—")}</div>
+        <div class="who">${esc(acct?.name || customerLabel(q))}</div>
         ${contact?`<div>Attn: ${esc(titleOf("contacts",contact))}${contact.jobTitle?", "+esc(contact.jobTitle):""}</div>`:""}
         ${acct?.address?`<div>${esc(acct.address)}</div>`:""}
         ${acct?.city?`<div>${esc(acct.city)}</div>`:""}
