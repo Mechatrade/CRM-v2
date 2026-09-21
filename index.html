@@ -1811,7 +1811,15 @@ function costingFigures(d){
    a partially-trimmed sheet shrinks its overhead the same way a smaller
    original order would have. */
 function recomputeTrimmedMargin(costingSheets, selItems){
-  const selDescs = new Set(selItems.map(i=> String(i.desc||"").trim()));
+  // Map each kept item's description to how much of it survived — not
+  // just whether it survived. A quantity cut from 20 to 5 should only
+  // count as 25% included, not 100%, or the prorated cost stays too high
+  // relative to the smaller quantity actually being sold.
+  const keptQtyByDesc = new Map();
+  selItems.forEach(i=>{
+    const key = String(i.desc||"").trim();
+    keptQtyByDesc.set(key, (keptQtyByDesc.get(key)||0) + Number(i.qty||0));
+  });
   let trimmedCostTotal = 0;
   const perSheet = [];
   (costingSheets||[]).forEach(c=>{
@@ -1820,7 +1828,13 @@ function recomputeTrimmedMargin(costingSheets, selItems){
     const baseAmounts = items.map(it=> Number(it.qty||0)*Number(it.price||0));
     const totalBase = baseAmounts.reduce((s,a)=>s+a,0);
     let includedBase = 0;
-    items.forEach((it,i)=>{ if (selDescs.has(String(it.desc||"").trim())) includedBase += baseAmounts[i]; });
+    items.forEach((it,i)=>{
+      const key = String(it.desc||"").trim();
+      const origQty = Number(it.qty||0);
+      const keptQty = keptQtyByDesc.get(key) || 0;
+      const ratio = origQty > 0 ? Math.min(1, keptQty/origQty) : 0;
+      includedBase += baseAmounts[i] * ratio;
+    });
     const frac = totalBase > 0 ? includedBase/totalBase : 0;
     if (frac <= 0) return;
     const sheetTrimmedCost = f.cost * frac;
