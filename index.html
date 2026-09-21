@@ -1801,6 +1801,37 @@ function costingFigures(d){
    sheet's base cost (equal split if there's no cost basis to go by), so a
    multi-item costing sheet hands off every item to the quotation instead
    of collapsing them into one line and losing the rest. */
+/* Re-costs a trimmed Sales Order selection against its source Costing
+   sheet(s) — matched by item description, since a Quotation's own items
+   carry no direct reference back to which sheet/raw item they came from.
+   Shared costs (shipping, freight, telegraphic, delivery, other
+   allowances) are prorated by each sheet's included share of its own
+   original base cost — same proportional-split logic costingItemQuotes()
+   already uses to turn one sheet total into per-item quotation lines, so
+   a partially-trimmed sheet shrinks its overhead the same way a smaller
+   original order would have. */
+function recomputeTrimmedMargin(costingSheets, selItems){
+  const selDescs = new Set(selItems.map(i=> String(i.desc||"").trim()));
+  let trimmedCostTotal = 0;
+  const perSheet = [];
+  (costingSheets||[]).forEach(c=>{
+    const f = costingFigures(c);
+    const items = c.items || [];
+    const baseAmounts = items.map(it=> Number(it.qty||0)*Number(it.price||0));
+    const totalBase = baseAmounts.reduce((s,a)=>s+a,0);
+    let includedBase = 0;
+    items.forEach((it,i)=>{ if (selDescs.has(String(it.desc||"").trim())) includedBase += baseAmounts[i]; });
+    const frac = totalBase > 0 ? includedBase/totalBase : 0;
+    if (frac <= 0) return;
+    const sheetTrimmedCost = f.cost * frac;
+    trimmedCostTotal += sheetTrimmedCost;
+    perSheet.push({ supplierName:c.supplierName, frac, originalGp:f.gp, originalCost:f.cost, trimmedCost:sheetTrimmedCost });
+  });
+  const trimmedSell = selItems.reduce((s,i)=> s + Number(i.qty||0)*Number(i.price||0), 0);
+  const gp = trimmedSell > 0 ? ((trimmedSell - trimmedCostTotal)/trimmedSell)*100 : 0;
+  const markup = trimmedCostTotal > 0 ? ((trimmedSell - trimmedCostTotal)/trimmedCostTotal)*100 : 0;
+  return { cost:trimmedCostTotal, sell:trimmedSell, gp, markup, perSheet, profit: trimmedSell - trimmedCostTotal };
+}
 function costingItemQuotes(c){
   const f = costingFigures(c);
   const items = Array.isArray(c.items) ? c.items : [];
@@ -3679,6 +3710,10 @@ function openSalesOrderConvertPreview(quotationId){
       </table>
       <div class="totals"><div class="row grand"><span>Total</span><span id="so-total">${money(q.total)}</span></div></div>
 
+      <div class="card-h" style="padding-left:0;padding-right:0;margin-top:18px"><h3>Margin check</h3></div>
+      <p style="font-size:12.5px;color:var(--muted);margin:0 0 8px">Recomputed against the Costing sheet(s) whenever you change what's included — shipping, freight, telegraphic charges, and other shared costs shrink proportionally with the trimmed items, the same way they'd be split on a smaller original order.</p>
+      <div id="so-margin" class="det"></div>
+
       <div class="eyebrow" style="margin:18px 0 8px">Customer PO reference</div>
       ${state.settings.driveFolders?.customerPO ? `<a href="${esc(state.settings.driveFolders.customerPO)}" target="_blank" rel="noopener" class="hint" style="display:inline-block;margin-bottom:8px">📁 Open destination folder — upload the customer's PO file here first</a><br>` : ""}
       <div class="fgrid">
@@ -3711,9 +3746,27 @@ function openSalesOrderConvertPreview(quotationId){
       total += amt;
     });
     $("#so-total").textContent = money(total);
+    renderMarginCheck();
+  }
+  function renderMarginCheck(){
+    const box = $("#so-margin");
+    if (!costingSheets.length){
+      box.innerHTML = `<p style="font-size:12.5px;color:var(--muted)">No Approved costing sheet to check margin against.</p>`;
+      return;
+    }
+    const m = recomputeTrimmedMargin(costingSheets, collectSOSelection().items);
+    const origGp = costingSheets.length===1 ? costingSheets[0].gpPct||0
+      : costingSheets.reduce((s,c)=>s+Number(c.gpPct||0),0)/costingSheets.length;
+    const dropped = m.gp < origGp - 0.5;
+    box.innerHTML = `
+      <div class="r"><div class="k">Originally costed at</div><div class="v">${esc(origGp.toFixed(1))}% GP${costingSheets.length>1?" (avg across sheets)":""}</div></div>
+      <div class="r"><div class="k">Recalculated cost (trimmed)</div><div class="v">${money(m.cost)}</div></div>
+      <div class="r"><div class="k">Recalculated GP%</div><div class="v" style="${dropped?'color:var(--alert);font-weight:600':''}">${esc(m.gp.toFixed(1))}%${dropped?' — lower than originally costed':''}</div></div>
+      <div class="r"><div class="k">Profit on this order</div><div class="v">${money(m.profit)}</div></div>`;
   }
   document.querySelectorAll('#so-items [data-so-chk]').forEach(el=> el.addEventListener("change", recalcSO));
   document.querySelectorAll('#so-items [data-so-qty]').forEach(el=> el.addEventListener("input", recalcSO));
+  recalcSO();
 
   // Keeps each surviving item's original index so it still lines up with
   // the right winning supplier below, even once some rows are excluded.
@@ -3802,13 +3855,15 @@ function buildSalesOrderSnapshot(q, chain, sel){
   // be less than the full quotation's total once items are excluded or
   // quantities reduced to match a partial PO.
   const total = items.reduce((s,it)=>s+Number(it.qty||0)*Number(it.price||0),0);
+  const margin = recomputeTrimmedMargin(costingSheets, srcItems);
   return {
     orderNo: q.quoteNo ? `SO-${q.quoteNo}` : `SO-${Date.now()}`,
     controlNo: q.controlNo || null,
     accountId: q.accountId || null, quotationId: q.id, dealId: q.dealId || null,
     orderDate: todayISO(), total: total || null, status:"Processing",
     poNumber: sel?.poNumber || null, poDate: sel?.poDate || null,
-    ownerId: q.ownerId, items, suppliers, billedTo
+    ownerId: q.ownerId, items, suppliers, billedTo,
+    marginCost: margin.cost || null, marginGp: margin.gp || null, marginProfit: margin.profit || null
   };
 }
 /* The actual write — a frozen snapshot of items, suppliers, and billing
@@ -6322,6 +6377,7 @@ function openSalesOrderDetail(id){
         ${d.poDate ? `<div class="r"><div class="k">PO date</div><div class="v mono" style="font-size:13px">${fmtDate(d.poDate)}</div></div>` : ""}
         <div class="r"><div class="k">Delivery date</div><div class="v mono" style="font-size:13px">${d.deliveryDate?fmtDate(d.deliveryDate):"—"}</div></div>
         <div class="r"><div class="k">Order value</div><div class="v">${money(d.total)}</div></div>
+        ${d.marginGp!=null ? `<div class="r"><div class="k">Margin at conversion</div><div class="v">${esc(Number(d.marginGp).toFixed(1))}% GP · ${money(d.marginProfit)} profit</div></div>` : ""}
         <div class="r"><div class="k">Owner</div><div class="v">${esc(userName(d.ownerId))}</div></div>
         ${d.notes ? `<div class="r full"><div class="k">Notes</div><div class="v">${esc(d.notes)}</div></div>` : ""}
       </div>
