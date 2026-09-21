@@ -4,14 +4,15 @@
    is handled separately by Firestore's own offline cache.
    Bump CACHE_VERSION whenever you upload a new index.html.
    ============================================================ */
-const CACHE_VERSION = "mechatrade-v100";
+const CACHE_VERSION = "mechatrade-v101";
 const SHELL = [
   "./",
   "./index.html",
   "./manifest.json",
   "./logo-lockup.png",
   "./logo-mark.png",
-  "./logo-print.png"
+  "./logo-print.png",
+  "./mechatrade-crm-user-guide.pdf"
 ];
 
 /* Third-party code the app needs to start: the Firebase library and the

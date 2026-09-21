@@ -189,6 +189,13 @@ a{color:var(--accent)}
 .nav button .count{
   margin-left:auto;font-family:var(--mono);font-size:11px;color:#8FA6B8;
 }
+.nav a.navlink{
+  display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  background:none;border:0;padding:8px 10px;border-radius:var(--r);
+  color:#C8D4DF;cursor:pointer;font-size:13.5px;text-decoration:none;box-sizing:border-box;
+}
+.nav a.navlink:hover{background:rgba(255,255,255,.06);color:#fff}
+.nav a.navlink .ico{width:16px;text-align:center;opacity:.85;font-size:13px}
 .rail-foot{padding:12px;border-top:1px solid rgba(255,255,255,.08)}
 .me{display:flex;align-items:center;gap:9px;padding:6px 4px}
 .me .av{
@@ -2383,6 +2390,13 @@ const NAV = [
     { id:"team",     label:"Team",     icon:"◑" },
     { id:"activity", label:"Activity History", icon:"◷" },
     { id:"settings", label:"Settings", icon:"⚙" }
+  ]},
+
+  /* Visible to everyone, every role, every department — not gated by
+     admin or dept like the groups above. Opens in a new tab since it's a
+     static file sitting alongside index.html, not an in-app route. */
+  { group:"Help", items:[
+    { id:"userguide", label:"User Guide", icon:"▤", href:"./mechatrade-crm-user-guide.pdf" }
   ]}
 ];
 
@@ -2404,7 +2418,10 @@ function renderNav(){
     <div class="nav-group">${esc(g.group)}</div>
     ${items.map(i=>{
       const n = i.count ? i.count() : 0;
-      return `<button data-go="${i.id}" class="${state.route===i.id?"on":""}">
+      return i.href
+        ? `<a href="${esc(i.href)}" target="_blank" rel="noopener" class="navlink">
+            <span class="ico">${i.icon}</span>${esc(i.label)}</a>`
+        : `<button data-go="${i.id}" class="${state.route===i.id?"on":""}">
         <span class="ico">${i.icon}</span>${esc(i.label)}
         ${i.count && n ? `<span class="count">${n}</span>`:""}
       </button>`;
