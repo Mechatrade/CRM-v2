@@ -1417,6 +1417,7 @@ const SCHEMAS = {
       { k:"orderDate",     l:"Order date",    type:"date",   table:true },
       { k:"poNumber",      l:"Customer PO no.", type:"text", table:true },
       { k:"poDate",        l:"PO date",       type:"date" },
+      { k:"customerPaymentTerms", l:"Customer payment terms", type:"text" },
       { k:"deliveryDate",  l:"Delivery date", type:"date",   table:true },
       { k:"total",         l:"Order value",   type:"money",  table:true },
       { k:"status",        l:"Status",        type:"select", opts:["Processing","Ready for delivery","Delivered","Invoiced","Cancelled"], def:"Processing", table:true },
@@ -3735,6 +3736,8 @@ function openSalesOrderConvertPreview(quotationId){
           <input id="so-po-no" placeholder="e.g. PO-2026-0456"></div>
         <div class="field"><label for="so-po-date">PO date</label>
           <input id="so-po-date" type="date"></div>
+        <div class="field full"><label for="so-pay-terms">Customer payment terms</label>
+          <input id="so-pay-terms" placeholder="e.g. Net 30, 50% down / 50% on delivery"></div>
       </div>
     </div>
     <div class="modal-f">
@@ -3793,7 +3796,8 @@ function openSalesOrderConvertPreview(quotationId){
       if (qty <= 0) return;
       selItems.push({ ...items[idx], qty, _origIndex: idx });
     });
-    return { items: selItems, poNumber: $("#so-po-no").value.trim()||null, poDate: $("#so-po-date").value||null };
+    return { items: selItems, poNumber: $("#so-po-no").value.trim()||null, poDate: $("#so-po-date").value||null,
+      customerPaymentTerms: $("#so-pay-terms").value.trim()||null };
   }
   $("#so-doc-preview").onclick = ()=>{
     const sel = collectSOSelection();
@@ -3876,6 +3880,7 @@ function buildSalesOrderSnapshot(q, chain, sel){
     accountId: q.accountId || null, quotationId: q.id, dealId: q.dealId || null,
     orderDate: todayISO(), total: total || null, status:"Processing",
     poNumber: sel?.poNumber || null, poDate: sel?.poDate || null,
+    customerPaymentTerms: sel?.customerPaymentTerms || null,
     ownerId: q.ownerId, items, suppliers, billedTo,
     marginCost: margin.cost || null, marginGp: margin.gp || null, marginProfit: margin.profit || null
   };
@@ -6389,6 +6394,7 @@ function openSalesOrderDetail(id){
         <div class="r"><div class="k">Order date</div><div class="v mono" style="font-size:13px">${fmtDate(d.orderDate)}</div></div>
         ${d.poNumber ? `<div class="r"><div class="k">Customer PO no.</div><div class="v">${esc(d.poNumber)}</div></div>` : ""}
         ${d.poDate ? `<div class="r"><div class="k">PO date</div><div class="v mono" style="font-size:13px">${fmtDate(d.poDate)}</div></div>` : ""}
+        ${d.customerPaymentTerms ? `<div class="r"><div class="k">Customer payment terms</div><div class="v">${esc(d.customerPaymentTerms)}</div></div>` : ""}
         <div class="r"><div class="k">Delivery date</div><div class="v mono" style="font-size:13px">${d.deliveryDate?fmtDate(d.deliveryDate):"—"}</div></div>
         <div class="r"><div class="k">Order value</div><div class="v">${money(d.total)}</div></div>
         ${d.marginGp!=null ? `<div class="r"><div class="k">Margin at conversion</div><div class="v">${esc(Number(d.marginGp).toFixed(1))}% GP · ${money(d.marginProfit)} profit</div></div>` : ""}
@@ -9222,6 +9228,7 @@ function salesOrderDocHTML(so){
           <tr><td>Order date</td><td class="r">${fmtDate(so.orderDate)}</td></tr>
           ${so.poNumber ? `<tr><td>Customer PO no.</td><td class="r">${esc(so.poNumber)}</td></tr>` : ""}
           ${so.poDate ? `<tr><td>PO date</td><td class="r">${fmtDate(so.poDate)}</td></tr>` : ""}
+          ${so.customerPaymentTerms ? `<tr><td>Payment terms</td><td class="r">${esc(so.customerPaymentTerms)}</td></tr>` : ""}
           ${so.deliveryDate ? `<tr><td>Delivery date</td><td class="r">${fmtDate(so.deliveryDate)}</td></tr>` : ""}
           ${so.quotationId ? `<tr><td>Quote no.</td><td class="r">${esc(recordTitle("quotations",so.quotationId))}</td></tr>` : ""}
         </table>
