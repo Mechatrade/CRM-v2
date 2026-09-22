@@ -1418,6 +1418,10 @@ const SCHEMAS = {
       { k:"poNumber",      l:"Customer PO no.", type:"text", table:true },
       { k:"poDate",        l:"PO date",       type:"date" },
       { k:"customerPaymentTerms", l:"Customer payment terms", type:"text" },
+      { k:"customerPaymentTermsType", l:"Payment terms type", type:"text", system:true },
+      { k:"advancePaymentAmount", l:"Advance payment amount", type:"money", system:true },
+      { k:"paymentTermsDays", l:"Payment terms — days", type:"text", system:true },
+      { k:"paymentTermsCustomDays", l:"Payment terms — custom days", type:"text", system:true },
       { k:"deliveryDate",  l:"Delivery date", type:"date",   table:true },
       { k:"total",         l:"Order value",   type:"money",  table:true },
       { k:"status",        l:"Status",        type:"select", opts:["Processing","Ready for delivery","Delivered","Invoiced","Cancelled"], def:"Processing", table:true },
@@ -3736,8 +3740,28 @@ function openSalesOrderConvertPreview(quotationId){
           <input id="so-po-no" placeholder="e.g. PO-2026-0456"></div>
         <div class="field"><label for="so-po-date">PO date</label>
           <input id="so-po-date" type="date"></div>
-        <div class="field full"><label for="so-pay-terms">Customer payment terms</label>
-          <input id="so-pay-terms" placeholder="e.g. Net 30, 50% down / 50% on delivery"></div>
+        <div class="field full"><label for="so-pay-type">Customer payment terms</label>
+          <select id="so-pay-type">
+            <option value="">— Select —</option>
+            <option value="Advance Payment">Advance Payment</option>
+            <option value="COD">COD</option>
+            <option value="Terms">Terms</option>
+          </select></div>
+        <div class="field" id="so-pay-advance-wrap" style="display:none">
+          <label for="so-pay-advance">Advance Payment Amount</label>
+          <input id="so-pay-advance" type="number" min="0" step="any" placeholder="0.00"></div>
+        <div class="field" id="so-pay-days-wrap" style="display:none">
+          <label for="so-pay-days">No. of days terms</label>
+          <select id="so-pay-days">
+            <option value="Net 7">Net 7</option>
+            <option value="Net 15">Net 15</option>
+            <option value="Net 30">Net 30</option>
+            <option value="Net 60">Net 60</option>
+            <option value="Custom">Custom</option>
+          </select></div>
+        <div class="field" id="so-pay-custom-wrap" style="display:none">
+          <label for="so-pay-custom">Custom — no. of days</label>
+          <input id="so-pay-custom" type="number" min="1" step="1" placeholder="e.g. 45"></div>
       </div>
     </div>
     <div class="modal-f">
@@ -3749,6 +3773,18 @@ function openSalesOrderConvertPreview(quotationId){
 
   const chain = { inquiry, costingSheets, account, contact };
   wireModalOpens($("#modal-root"));
+
+  // Payment terms: Advance Payment reveals an amount field, Terms reveals
+  // a day-count dropdown which itself reveals a custom-days field when
+  // "Custom" is picked — each layer only shows when relevant.
+  const syncPayTerms = ()=>{
+    const type = $("#so-pay-type").value;
+    $("#so-pay-advance-wrap").style.display = type === "Advance Payment" ? "block" : "none";
+    $("#so-pay-days-wrap").style.display = type === "Terms" ? "block" : "none";
+    $("#so-pay-custom-wrap").style.display = (type === "Terms" && $("#so-pay-days").value === "Custom") ? "block" : "none";
+  };
+  $("#so-pay-type").addEventListener("change", syncPayTerms);
+  $("#so-pay-days").addEventListener("change", syncPayTerms);
 
   function recalcSO(){
     let total = 0;
@@ -3797,7 +3833,30 @@ function openSalesOrderConvertPreview(quotationId){
       selItems.push({ ...items[idx], qty, _origIndex: idx });
     });
     return { items: selItems, poNumber: $("#so-po-no").value.trim()||null, poDate: $("#so-po-date").value||null,
-      customerPaymentTerms: $("#so-pay-terms").value.trim()||null };
+      ...collectPaymentTerms() };
+  }
+  function collectPaymentTerms(){
+    const type = $("#so-pay-type").value || null;
+    let advanceAmount = null, days = null, customDays = null, summary = null;
+    if (type === "Advance Payment"){
+      advanceAmount = Number($("#so-pay-advance").value||0) || null;
+      summary = advanceAmount ? `Advance Payment — ${money(advanceAmount)}` : "Advance Payment";
+    } else if (type === "COD"){
+      summary = "COD";
+    } else if (type === "Terms"){
+      days = $("#so-pay-days").value || null;
+      if (days === "Custom"){
+        customDays = Number($("#so-pay-custom").value||0) || null;
+        summary = customDays ? `Terms — ${customDays} days` : "Terms — Custom";
+      } else if (days){
+        summary = `Terms — ${days}`;
+      }
+    }
+    return {
+      customerPaymentTermsType: type, advancePaymentAmount: advanceAmount,
+      paymentTermsDays: days, paymentTermsCustomDays: customDays,
+      customerPaymentTerms: summary
+    };
   }
   $("#so-doc-preview").onclick = ()=>{
     const sel = collectSOSelection();
@@ -3881,6 +3940,10 @@ function buildSalesOrderSnapshot(q, chain, sel){
     orderDate: todayISO(), total: total || null, status:"Processing",
     poNumber: sel?.poNumber || null, poDate: sel?.poDate || null,
     customerPaymentTerms: sel?.customerPaymentTerms || null,
+    customerPaymentTermsType: sel?.customerPaymentTermsType || null,
+    advancePaymentAmount: sel?.advancePaymentAmount ?? null,
+    paymentTermsDays: sel?.paymentTermsDays || null,
+    paymentTermsCustomDays: sel?.paymentTermsCustomDays ?? null,
     ownerId: q.ownerId, items, suppliers, billedTo,
     marginCost: margin.cost || null, marginGp: margin.gp || null, marginProfit: margin.profit || null
   };
