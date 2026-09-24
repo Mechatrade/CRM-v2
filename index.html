@@ -1461,6 +1461,7 @@ const SCHEMAS = {
       { k:"docDistributorCert",  l:"Authorized Distributor Certificate (if applicable)", type:"confirm", fileLink:true },
       { k:"docCompanyProfile",   l:"Company Profile",                   type:"confirm", fileLink:true },
       { k:"docBankDetails",      l:"Bank Details",                      type:"confirm", fileLink:true },
+      { k:"docSupplierQuotation",l:"Supplier's Quotation",              type:"confirm", fileLink:true },
       { k:"lastCanvassDate", l:"Last canvassed on", type:"date", table:true },
       { k:"ownerId",         l:"Owner",           type:"ref",   refTo:"users", table:true, assignOnly:true },
       { k:"notes",           l:"Notes",           type:"textarea", full:true }
@@ -5301,7 +5302,8 @@ const SUPPLIER_DOCS = [
   { k:"docMayorsPermit",    l:"Mayor's/Business Permit",                  req:true  },
   { k:"docDistributorCert", l:"Authorized Distributor Certificate",       req:false },
   { k:"docCompanyProfile",  l:"Company Profile",                         req:true  },
-  { k:"docBankDetails",     l:"Bank Details",                            req:true  }
+  { k:"docBankDetails",     l:"Bank Details",                            req:true  },
+  { k:"docSupplierQuotation", l:"Supplier's Quotation",                  req:false }
 ];
 function seriesPanel(){
   const audit = seriesAudit();
