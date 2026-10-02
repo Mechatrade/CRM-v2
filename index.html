@@ -2613,6 +2613,13 @@ function recordTitle(col, id){
 }
 function cell(col,f,d){
   const v = d[f.k];
+  // A quotation whose linked costing was revised/re-approved after it left
+  // Draft doesn't get auto-overwritten (see syncQuotationFromCosting) —
+  // flag it right on the list's title column too, so it's not only
+  // visible to someone who happens to open that exact record.
+  if (col === "quotations" && f.k === "quoteNo" && d.costingOutOfSync){
+    return `<span title="Linked costing was revised after this quotation left Draft — open it to review" style="margin-right:5px">⚠️</span>${esc(v||"")}`;
+  }
   // Accounts are a shared registry (everyone can see the company exists,
   // to avoid duplicate records) but phone/city are the account owner's own
   // contact details — those stay visible only to the owner, the account
@@ -5805,26 +5812,47 @@ async function recordApprovalEvent(col, id, action){
   try{ await updateDoc(doc(db,col,id), patch); }
   catch(e){ console.warn("approval log", e); }
 }
+/* Snapshot of a quotation's content fields, for the "previous version"
+   trail Quote Preview's Rev selector reads from. Shared by a manual edit
+   (q-save, above) and a costing-driven sync below, so either kind of
+   change leaves something to look back at. */
+function quoteVersionSnapshot(q){
+  return {
+    revision: Number(q.revision||0),
+    title: q.title||null, items: q.items||[], subtotal: q.subtotal||0, total: q.total||0,
+    discountPct: q.discountPct||null, taxPct: q.taxPct||null, terms: q.terms||null,
+    issueDate: q.issueDate||null, validUntil: q.validUntil||null, quoteType: q.quoteType||null,
+    savedAt: new Date().toISOString()
+  };
+}
 /* After a costing sheet is (re-)approved, bring its linked quotation back
    in step — but only while that quotation is still Draft. Once a quote has
    gone out (Sent, Viewed, or further), it's already in the customer's
-   hands and updating it silently would be the wrong call — flag it for a
-   human instead. Mirrors proceedRecord()'s "costing" branch: gathers every
-   sibling sheet sharing the same control number and only proceeds once
-   every one of them is Approved, so the quotation always reflects the
-   full picture, not a partial one. */
+   hands and updating it silently would be the wrong call: instead of
+   overwriting it, this sets costingOutOfSync so the quotation's own detail
+   view can show a persistent banner (a toast alone is too easy to miss),
+   and forceSyncQuotationFromCosting() below lets a human pull the update
+   in deliberately once they've reviewed it. Mirrors proceedRecord()'s
+   "costing" branch: gathers every sibling sheet sharing the same control
+   number and only proceeds once every one of them is Approved, so the
+   quotation always reflects the full picture, not a partial one. */
 async function syncQuotationFromCosting(costingId){
   const c = state.data.costing.get(costingId);
   if (!c || !c.controlNo) return;
   const q = rows("quotations").find(x=>x.controlNo===c.controlNo);
   if (!q) return;                                   // nothing generated yet — Proceed will handle it
-  if (q.status !== "Draft"){
-    toast(`Note: quotation ${q.quoteNo} has already moved past Draft — check whether it needs a manual update.`, true);
-    return;
-  }
   const siblings = rows("costing").filter(x=>x.controlNo===c.controlNo)
     .map(x=> x.id===costingId ? { ...x, status:"Approved" } : x);  // we just approved this one — don't wait on the listener to catch up
   if (siblings.some(x=>x.status!=="Approved")) return;   // still waiting on other sheets under this control no.
+  if (q.status !== "Draft"){
+    try{
+      await updateDoc(doc(db,"quotations",q.id), {
+        costingOutOfSync: true, costingOutOfSyncAt: serverTimestamp(), updatedAt: serverTimestamp()
+      });
+    }catch(e){ console.warn("flag out-of-sync", e); }
+    toast(`Quotation ${q.quoteNo} has already moved past Draft — flagged on the quotation for manual review instead of overwriting it.`, true);
+    return;
+  }
   const items = siblings.flatMap(x=> costingItemQuotes(x));
   const t = quoteTotals(items, q.discountPct||0, q.taxPct||0);
   const me = state.users.get(myUid());
@@ -5837,12 +5865,56 @@ async function syncQuotationFromCosting(costingId){
   try{
     await updateDoc(doc(db,"quotations",q.id), {
       items, subtotal: t.sub, total: t.total,
+      // Keep what it looked like right before this costing-driven update —
+      // same as a manual edit does — or there'd be nothing for the Rev
+      // selector in Quote Preview to show; this was the "revision viewing
+      // is gone" bug.
+      previousVersions: Array.isArray(q.previousVersions) ? [...q.previousVersions, quoteVersionSnapshot(q)] : [quoteVersionSnapshot(q)],
+      revision: Number(q.revision||0) + 1,
       costingRevision: Number(q.costingRevision||0) + 1,
+      costingOutOfSync: false,
       approvalLog: Array.isArray(q.approvalLog) ? [...q.approvalLog, entry] : [entry],
       updatedAt: serverTimestamp()
     });
     toast(`Quotation ${q.quoteNo} updated to match the revised costing.`);
   }catch(e){ console.warn("quote sync", e); }
+}
+/* The deliberate, past-Draft counterpart to syncQuotationFromCosting()
+   above — triggered only by a person clicking "Update from costing" on
+   the out-of-sync banner in Quote Detail, never automatically, since the
+   quotation may already be in the customer's hands. */
+async function forceSyncQuotationFromCosting(quotationId){
+  const q = state.data.quotations.get(quotationId);
+  if (!q || !q.controlNo) return;
+  const siblings = rows("costing").filter(x=>x.controlNo===q.controlNo);
+  if (!siblings.length || siblings.some(x=>x.status!=="Approved")){
+    toast("Every costing sheet under this control no. needs to be Approved first.", true);
+    return;
+  }
+  if (!confirm(`Replace ${q.quoteNo}'s items and total with the current Approved costing figures?\n\n`
+    + `This will be recorded as a new revision — the version it replaces stays viewable from Preview.`)) return;
+  const items = siblings.flatMap(x=> costingItemQuotes(x));
+  const t = quoteTotals(items, q.discountPct||0, q.taxPct||0);
+  const me = state.users.get(myUid());
+  const entry = {
+    action: "Costing Updated", by: myUid(),
+    byName: me?.displayName || state.profile?.displayName || "—",
+    byRole: ROLES[me?.role]?.label || me?.role || "—",
+    at: new Date().toISOString()
+  };
+  try{
+    await updateDoc(doc(db,"quotations",q.id), {
+      items, subtotal: t.sub, total: t.total,
+      previousVersions: Array.isArray(q.previousVersions) ? [...q.previousVersions, quoteVersionSnapshot(q)] : [quoteVersionSnapshot(q)],
+      revision: Number(q.revision||0) + 1,
+      costingRevision: Number(q.costingRevision||0) + 1,
+      costingOutOfSync: false,
+      approvalLog: Array.isArray(q.approvalLog) ? [...q.approvalLog, entry] : [entry],
+      updatedAt: serverTimestamp()
+    });
+    toast(`Quotation ${q.quoteNo} updated.`);
+    closeModal(true); openQuoteDetail(quotationId);
+  }catch(e){ toast(e.message, true); }
 }
 /* Rebuild a series from the quotations that actually exist. */
 async function repairSeries(key){
@@ -8587,6 +8659,12 @@ function openQuoteDetail(id){
       <div><div class="eyebrow">Quotation</div><h3>${esc(q.quoteNo)}</h3></div>
       <button class="x" data-close aria-label="Close">×</button></div>
     <div class="modal-b">
+      ${q.costingOutOfSync ? `<div style="margin:0 0 16px;padding:10px 14px;background:#FFF3E0;
+          border:1px solid #F5C177;border-radius:6px;color:#8A5A00;font-size:13px;
+          display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="flex:1">⚠ The linked costing sheet was revised and re-approved after this quotation left Draft — the price/items below may be out of date.</span>
+        <button class="btn sm" id="q-force-sync">Update from costing</button>
+      </div>` : ""}
       <div class="det">
         <div class="r full"><div class="k">Subject</div><div class="v">${esc(q.title||"—")}</div></div>
         ${q.controlNo ? `<div class="r"><div class="k">Control No.</div><div class="v mono" style="font-size:13px">${esc(q.controlNo)}</div></div>` : ""}
@@ -8638,6 +8716,8 @@ function openQuoteDetail(id){
   $("#q-print").onclick = ()=> printQuote(id);
   const convBtn = $("#q-convert-so");
   if (convBtn) convBtn.onclick = ()=>{ closeModal(true); startSalesOrderConversion(id); };
+  const forceSyncBtn = $("#q-force-sync");
+  if (forceSyncBtn) forceSyncBtn.onclick = ()=> forceSyncQuotationFromCosting(id);
 }
 
 /* The quotation document. Preview and print render exactly the same HTML,
