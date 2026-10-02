@@ -6482,7 +6482,14 @@ async function proceedRecord(col, id){
     // combined into one quotation, one line per sheet.
     const existingQuote = d.controlNo ? rows("quotations").find(q=>q.controlNo===d.controlNo) : null;
     if (existingQuote){
-      toast("A quotation already exists for this control number — opening it.");
+      // Proceed used to just reopen the existing quotation untouched —
+      // which is exactly why re-approving a revised costing sheet and
+      // clicking Proceed looked like it did nothing: this is the path a
+      // rep actually uses, and it never called the sync at all. Run the
+      // same sync the status-dropdown path uses before opening it, so
+      // Proceed always reflects the current Approved costing figures (or
+      // flags the quotation for manual review if it's already past Draft).
+      await syncQuotationFromCosting(id);
       openDetail("quotations", existingQuote.id);
       return;
     }
