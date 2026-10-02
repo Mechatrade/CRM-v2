@@ -2775,7 +2775,7 @@ function approvalHistoryHTML(d){
       ${cn ? `<span class="eyebrow" style="margin-left:10px">${cn} costing update${cn===1?"":"s"}</span>` : ""}</div>
     ${d.approvalLog.slice().reverse().map(e=>`
       <div style="display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line-2)">
-        <span class="pill ${e.action==="Approved"?"accent":e.action==="Revised"?"warn":e.action==="Costing Updated"?"info":"alert"}" style="margin-top:1px">${esc(e.action)}</span>
+        <span class="pill ${e.action==="Approved"?"accent":["Revised","Sent back to Draft"].includes(e.action)?"warn":e.action==="Costing Updated"?"info":"alert"}" style="margin-top:1px">${esc(e.action)}</span>
         <div style="flex:1">
           <div style="font-size:13px">${esc(e.byName)} <span style="color:var(--muted)">— ${esc(e.byRole)}</span></div>
           <div style="font-size:11.5px;color:var(--muted)">${fmtDateTimePH(e.at)}</div>
@@ -5812,6 +5812,35 @@ async function recordApprovalEvent(col, id, action){
   try{ await updateDoc(doc(db,col,id), patch); }
   catch(e){ console.warn("approval log", e); }
 }
+/* Pulls a quotation straight back to Draft the moment its linked costing
+   sheet is revised — not waiting for the re-approval round-trip, and not
+   just flagging it (costingOutOfSync below still covers the rarer case
+   where a quotation's own edit history diverges from this). Called from
+   the Costing form's own Save handler whenever editing an Approved sheet
+   knocks it back to "Submitted for Approval", so a revised quotation can
+   never sit Approved or go out again without a fresh human look. Once
+   it's Draft, the normal costing-approval sync above picks it back up
+   automatically the moment the costing is re-approved. */
+async function revertQuotationToDraftForCostingRevision(controlNo){
+  if (!controlNo) return null;
+  const q = rows("quotations").find(x=>x.controlNo===controlNo);
+  if (!q || q.status === "Draft") return null;
+  const me = state.users.get(myUid());
+  const entry = {
+    action: "Sent back to Draft", by: myUid(),
+    byName: me?.displayName || state.profile?.displayName || "—",
+    byRole: ROLES[me?.role]?.label || me?.role || "—",
+    at: new Date().toISOString()
+  };
+  try{
+    await updateDoc(doc(db,"quotations",q.id), {
+      status: "Draft", costingOutOfSync: false,
+      approvalLog: Array.isArray(q.approvalLog) ? [...q.approvalLog, entry] : [entry],
+      updatedAt: serverTimestamp()
+    });
+    return q.quoteNo;                                 // caller folds this into one combined toast
+  }catch(e){ console.warn("revert quote to draft", e); return null; }
+}
 /* Snapshot of a quotation's content fields, for the "previous version"
    trail Quote Preview's Rev selector reads from. Shared by a manual edit
    (q-save, above) and a costing-driven sync below, so either kind of
@@ -8139,8 +8168,10 @@ function openCostingForm(id, preset){
         await tracked(addDoc(collection(db,"costing"), payload));
       }
       closeModal(true);
+      const revertedQuoteNo = wasApproved ? await revertQuotationToDraftForCostingRevision(d.controlNo) : null;
       toast(wasApproved
         ? "Costing sheet saved — since it was Approved, editing it reset the status to Submitted for Approval and it needs re-approval."
+          + (revertedQuoteNo ? ` Quotation ${revertedQuoteNo} was also sent back to Draft for review.` : "")
         : "Costing sheet " + (id?"saved":"created"));
       if (!id && typeof d.__onSaved === "function") d.__onSaved();
     }catch(e){
