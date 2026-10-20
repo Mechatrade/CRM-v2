@@ -1491,6 +1491,16 @@ const esc = s => String(s??"").replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;",
 /* Every screen reads through this, so an admin viewing the Sales workspace
    sees Sales records only. Lookups by id still use state.data directly, so
    account and contact names keep resolving across departments. */
+/* Leads are now readable department-wide for browsing, but anything that
+   COUNTS leads (nav badges, dashboards, reports) should still reflect only
+   the signed-in person's own, as before — managers/admins keep their
+   wider view. */
+function myLeads(){
+  const all = rows("leads");
+  if (isAdmin() || isManager()) return all;
+  const u = myUid();
+  return all.filter(l=>l.ownerId===u || l.createdBy===u || l.accountManagerId===u || l.sourcedBy===u);
+}
 const rows = c => {
   const all = Array.from(state.data[c].values());
   if (SHARED_COLLECTIONS.includes(c)) return all;      // one registry for everyone
@@ -2266,6 +2276,10 @@ function scopeQueries(col){
   else
     qs.push(query(base, where("ownerId","==", myUid())));
   qs.push(query(base, where("createdBy","==", myUid())));       // leads you sourced, then handed over
+  // Leads are visible department-wide (read-only unless they're yours) —
+  // matched by the department clause in the leads rule.
+  if (col === "leads" && state.profile.tier !== "manager")
+    qs.push(query(base, where("department","==", state.profile.department)));
   // anything raised against a customer you manage, whoever created it
   qs.push(query(base, where("accountManagerId","==", myUid())));
   if (col === "deals") qs.push(query(base, where("sourcedBy","==", myUid())));
@@ -2360,7 +2374,7 @@ function salesNavGroups(dept){
   return [
     { group:"Customers & Leads", depts, items:[
       { id:"leads",    label:"Leads",     icon:"◔", depts,
-        count:()=>rows("leads").filter(l=>!["Converted","Unresponsive"].includes(l.status)).length },
+        count:()=>myLeads().filter(l=>!["Converted","Unresponsive"].includes(l.status)).length },
       { id:"accounts", label:"Customers", icon:"▣", depts },
       { id:"contacts", label:"Contacts",  icon:"◍", depts }
     ]},
@@ -2438,7 +2452,7 @@ const NAV = [
   /* ---- Marketing ---- */
   { group:"Marketing", depts:["Marketing"], items:[
     { id:"leads",     label:"Leads",     icon:"◔", depts:["Marketing"],
-      count:()=>rows("leads").filter(l=>l.status==="New").length },
+      count:()=>myLeads().filter(l=>l.status==="New").length },
     { id:"campaigns", label:"Campaigns", icon:"◎", depts:["Marketing"] },
     { id:"events",    label:"Events",    icon:"⚑", depts:["Marketing"] },
     { id:"content",   label:"Content",   icon:"✎", depts:["Marketing"] },
@@ -3341,11 +3355,11 @@ function viewList(col){
       <option value="">All ${esc(statusField.l.toLowerCase())}es</option>
       ${statusField.opts.map(o=>opt(o,f.status)).join("")}
     </select>`:""}
-    ${isManager()?`<select data-filter="owner">
+    ${isManager()||col==="leads"?`<select data-filter="owner">
       <option value="">Everyone</option>
       ${ownerOptions(f.owner)}
     </select>
-    <select data-filter="dept" title="Filter by the owner's department">
+    ${isManager()?`<select data-filter="dept" title="Filter by the owner's department">
       <option value="">All departments</option>
       ${DEPTS.map(d=>opt(d,f.dept)).join("")}
     </select>
@@ -3353,7 +3367,7 @@ function viewList(col){
       <option value="">All roles</option>
       ${Object.entries(ROLES).map(([k,r])=>
         `<option value="${k}"${f.role===k?" selected":""}>${esc(r.label)}</option>`).join("")}
-    </select>`:""}
+    </select>`:""}`:""}
     ${col==="accounts" && isManager()?`<select data-filter="mgr" title="Filter by account manager">
       <option value="">Any account manager</option>
       <option value="__none__"${f.mgr==="__none__"?" selected":""}>Not assigned</option>
@@ -4753,7 +4767,7 @@ function viewForecast(){
 function viewMarketingDashboard(scope="dept"){
   const uid = myUid();
   const own = list => scope==="mine" ? list.filter(d=>d.ownerId===uid) : list;
-  const camps = own(rows("campaigns")), leads = own(rows("leads")), deals = own(rows("deals"));
+  const camps = own(rows("campaigns")), leads = own(myLeads()), deals = own(rows("deals"));
   const ms = monthStart();
   const sum = k => camps.reduce((s,c)=>s+Number(c[k]||0),0);
   const leadsM = leads.filter(l=>toDate(l.createdAt) >= ms);
@@ -4967,7 +4981,7 @@ function viewPipeline(){
    actual page layout lives in the print helpers.
    ==================================================================== */
 function buildSalesReport(from, to){
-  const leads = rows("leads").filter(l=>inRange(l.createdAt, from, to));
+  const leads = myLeads().filter(l=>inRange(l.createdAt, from, to));
   const deals = rows("deals").filter(d=>inRange(d.createdAt, from, to));
   const won = deals.filter(d=>d.stage==="Won"), lost = deals.filter(d=>d.stage==="Lost");
   const closed = won.length + lost.length;
