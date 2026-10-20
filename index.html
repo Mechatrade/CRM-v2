@@ -3430,13 +3430,13 @@ function titleOf(col,d){
 /* A quiet note of any numbers waiting to be reused, and of real gaps —
    sequences that were skipped and never filled. */
 function seriesBadge(){
-  const keys = new Set(Array.from(state.counters.keys()).filter(k=>k.startsWith(QUOTE_ROOT+"-")));
+  const keys = new Set(Array.from(state.counters.keys()).filter(k=>/^MTISI-\d{2}-Y\d{2}$/.test(k)));
   rows("quotations").forEach(q=>{ const sr = seriesOf(q); if (sr) keys.add(sr.key); });
   let free = 0, gaps = 0;
   keys.forEach(k=>{
     free += releasedNumbers(k).length;
     const used = new Set(rows("quotations").map(seriesOf).filter(x=>x && x.key===k).map(x=>x.no));
-    const next = Number(state.counters.get(k)?.next || 1);
+    const next = seriesNextFor(k, state.counters.has(k), state.counters.get(k));
     for (let i=1;i<next;i++) if (!used.has(i) && !releasedNumbers(k).includes(i)) gaps++;
   });
   if (!free && !gaps) return "";
@@ -3449,12 +3449,12 @@ function seriesBadge(){
 /* Every series we know about, with what the counter says versus what the
    quotations on file actually show. */
 function seriesAudit(){
-  const keys = new Set(Array.from(state.counters.keys()).filter(k=>k.startsWith(QUOTE_ROOT+"-")));
+  const keys = new Set(Array.from(state.counters.keys()).filter(k=>/^MTISI-\d{2}-Y\d{2}$/.test(k)));
   rows("quotations").forEach(q=>{ const sr = seriesOf(q); if (sr) keys.add(sr.key); });
   return Array.from(keys).sort().map(key=>{
     const used = rows("quotations").map(seriesOf).filter(x=>x && x.key===key).map(x=>x.no).sort((a,b)=>a-b);
     const highest = used.length ? Math.max(...used) : 0;
-    const counter = Number(state.counters.get(key)?.next || 1);
+    const counter = seriesNextFor(key, state.counters.has(key), state.counters.get(key));
     const pool = releasedNumbers(key);
     const gaps = [];
     for (let i=1;i<=highest;i++) if (!used.includes(i) && !pool.includes(i)) gaps.push(i);
@@ -7097,11 +7097,29 @@ function quoteDeptOf(ownerId){
 function counterKey(dept, isoDate){
   const d = isoDate ? new Date(isoDate) : new Date();
   const when = isNaN(d) ? new Date() : d;
-  const mm = String(when.getMonth()+1).padStart(2,"0");
   const yy = String(when.getFullYear()).slice(-2);
-  return `${QUOTE_ROOT}-${DEPT_CODE[dept] || "00"}-${mm}${yy}`;
+  // One running series per department per YEAR — the month appears in the
+  // printed number but no longer restarts the count.
+  return `${QUOTE_ROOT}-${DEPT_CODE[dept] || "00"}-Y${yy}`;
 }
-function formatQuoteNo(key, n){ return `${key}-${String(n).padStart(3,"0")}`; }
+/* "MTISI-08-Y26" + 9 + issue date in Oct 2026 -> "MTISI-08-1026-009" */
+function formatQuoteNo(key, n, isoDate){
+  const d = isoDate ? new Date(isoDate) : new Date();
+  const when = isNaN(d) ? new Date() : d;
+  const mm = String(when.getMonth()+1).padStart(2,"0");
+  const m = String(key).match(/^(.*)-Y(\d{2})$/);
+  const head = m ? `${m[1]}-${mm}${m[2]}` : key;
+  return `${head}-${String(n).padStart(3,"0")}`;
+}
+/* Where a series' counter stands. A series with no counter document yet
+   (first quotation under the running-number scheme) starts just after the
+   highest number already issued in that department+year, so it carries on
+   from the numbers issued before the change. */
+function seriesNextFor(key, counterExists, cur){
+  if (counterExists) return Number(cur?.next || 1);
+  const used = rows("quotations").map(seriesOf).filter(x=>x && x.key===key).map(x=>x.no);
+  return (used.length ? Math.max(...used) : 0) + 1;
+}
 /* Numbers freed up when a quotation was deleted, lowest first. */
 function releasedNumbers(key){
   const r = state.counters.get(key)?.released;
@@ -7112,12 +7130,18 @@ function releasedNumbers(key){
 function projectedQuoteNo(dept, isoDate){
   const key = counterKey(dept, isoDate);
   const free = releasedNumbers(key);
-  return formatQuoteNo(key, free.length ? free[0] : (state.counters.get(key)?.next || 1));
+  const c = state.counters.get(key);
+  return formatQuoteNo(key, free.length ? free[0] : seriesNextFor(key, !!c, c), isoDate);
 }
 /* "MTISI-05-0926" -> "Sales Department · September 2026", for the admin
    series panel — the raw key alone isn't self-explanatory once it's a
    numeric code instead of a department letter. */
 function describeSeriesKey(key){
+  const y = String(key||"").match(/^MTISI-(\d{2})-Y(\d{2})$/);
+  if (y){
+    const dept = Object.keys(DEPT_CODE).find(d=>DEPT_CODE[d]===y[1]);
+    return `${dept || "Dept code "+y[1]} · running series for 20${y[2]}`;
+  }
   const m = String(key||"").match(/^MTISI-(\d{2})-(\d{2})(\d{2})$/);
   if (!m) return "";
   const [, code, mm, yy] = m;
@@ -7131,6 +7155,11 @@ function describeSeriesKey(key){
 /* Split a quote number back into its series and sequence, for older
    quotations saved before those were stored as fields. */
 function seriesOf(q){
+  // quoteNo is fixed for life, so the running (department + year) series
+  // is read from it — this also folds quotations issued under the old
+  // month-by-month scheme into the same series.
+  const y = String(q.quoteNo||"").match(/^(MTISI-\d{2})-\d{2}(\d{2})-(\d+)$/);
+  if (y) return { key:`${y[1]}-Y${y[2]}`, no:Number(y[3]) };
   if (q.seriesKey && q.seriesNo) return { key:q.seriesKey, no:Number(q.seriesNo) };
   const m = String(q.quoteNo||"").match(/^(.*)-(\d+)$/);
   return m ? { key:m[1], no:Number(m[2]) } : null;
@@ -8657,14 +8686,14 @@ function openQuoteForm(id, preset){
           const cur = snap.exists() ? snap.data() : {};
           const free = (Array.isArray(cur.released) ? cur.released : [])
             .map(Number).filter(x=>x>0).sort((a,b)=>a-b);
-          let n, nextVal = Number(cur.next || 1);
+          let n, nextVal = seriesNextFor(key, snap.exists(), cur);
           if (free.length) n = free.shift();          // fill the gap before taking a new one
           else { n = nextVal; nextVal = n + 1; }
           // A safety ceiling, not a routine limit — if this ever actually
           // fires, an admin needs to open a new series by hand.
           if (n > QUOTE_SERIES_MAX)
-            throw new Error(`This series (${key}) has reached its ${QUOTE_SERIES_MAX}-number limit for the month. Ask an admin to open a new series.`);
-          const quoteNo = formatQuoteNo(key, n);
+            throw new Error(`This series (${key}) has reached its ${QUOTE_SERIES_MAX}-number limit for the year. Ask an admin to open a new series.`);
+          const quoteNo = formatQuoteNo(key, n, payload.issueDate);
           tx.set(cref, { next:nextVal, released:free,
             department:dept, updatedAt:serverTimestamp() }, { merge:true });
 
