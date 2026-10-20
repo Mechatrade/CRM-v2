@@ -1968,9 +1968,25 @@ paintNet();
 /* Wraps a write so the pill counts it until the server confirms it. */
 async function tracked(promise){
   bumpPending(1);
+  // Offline, Firestore only settles a write once the server confirms it —
+  // which would leave Save greyed out and the form open even though the
+  // change is safely queued on this device. So offline we don't wait: the
+  // write stays counted in the status pill until it really goes through,
+  // and a rejection after reconnecting (e.g. permission denied) is shown.
+  if (!net.online){
+    promise.then(()=>bumpPending(-1), e=>{
+      bumpPending(-1);
+      console.warn("queued write failed", e);
+      toast("A change made offline couldn't be saved: " + (e?.code==="permission-denied" ? "you don't have permission for it" : (e?.message||"error")), true);
+    });
+    return null;
+  }
   try{ return await promise; }
   finally{ bumpPending(-1); }
 }
+/* Suffix for "saved" toasts so it's clear when a change is only on this
+   device so far. */
+function syncNote(){ return net.online ? "" : " — saved on this device, will sync when online"; }
 
 /* ------------------------------------------------------------------ */
 /* 5. AUTH                                                             */
@@ -6268,21 +6284,28 @@ function controlNoSeriesOf(cn){
 }
 async function nextControlNo(dept){
   const now = new Date();
-  const key = `CN-${QUOTE_PREFIX[dept] || "ADM"}-${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
-  // Self-heals if the counter ever drifted below what's already on an
-  // inquiry in this series (e.g. reset by hand) — never issues a number at
-  // or below the highest one already in use.
-  const used = rows("inquiries").map(i=>controlNoSeriesOf(i.controlNo)).filter(x=>x && x.key===key).map(x=>x.no);
+  const base = `CN-${QUOTE_PREFIX[dept] || "ADM"}-${now.getFullYear()}`;   // e.g. CN-BD-2026
+  const mm = String(now.getMonth()+1).padStart(2,"0");
+  // The month is shown in the number but does NOT restart the sequence —
+  // the running number carries on across months and only starts again at
+  // 00001 in a new year. Counter key = department + year.
+  // Self-heals: never issues a number at or below the highest one already
+  // used by any inquiry in this department+year (this also seeds the
+  // counter correctly from numbers issued before this change).
+  const used = rows("inquiries").map(i=>{
+    const m = String(i.controlNo||"").match(/^(CN-[^-]+-\d{4})-\d{2}-(\d+)$/);
+    return m && m[1]===base ? Number(m[2]) : 0;
+  });
   const highestUsed = used.length ? Math.max(...used) : 0;
   let n = 1;
   await runTransaction(db, async tx=>{
-    const cref = doc(db,"counters",key);
+    const cref = doc(db,"counters",base);
     const snap = await tx.get(cref);
     const stored = Number(snap.exists() ? snap.data().next : 1) || 1;
     n = Math.max(stored, highestUsed + 1);
     tx.set(cref, { next:n+1, updatedAt:serverTimestamp() }, { merge:true });
   });
-  return `${key}-${String(n).padStart(5,"0")}`;
+  return `${base}-${mm}-${String(n).padStart(5,"0")}`;
 }
 
 /* Seeds a lightweight Contact record from a Company/Account's "Contact
@@ -6308,12 +6331,12 @@ async function autoSeedContact({ contactName, jobTitle, email, phone, accountId,
   // on this being set correctly, not just cosmetic.
   const acctManagerId = accountId ? state.data.accounts.get(accountId)?.accountManagerId || null : null;
   try{
-    await addDoc(collection(db,"contacts"), {
+    await tracked(addDoc(collection(db,"contacts"), {
       firstName, lastName, accountId: accountId || null,
       jobTitle: jobTitle || null, email: email || null, phone: phone || null,
       ownerId, department, accountManagerId: acctManagerId, createdBy: myUid(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
       notes: (!accountId && companyFallback) ? `Company (from Lead): ${companyFallback} — add the rest of this contact's details here.` : null
-    });
+    }));
   }catch(e){ console.warn("auto-seed contact", e); }
 }
 async function submitForm(col,id){
@@ -6378,7 +6401,7 @@ async function submitForm(col,id){
   try{
     let savedId = id;
     if (id) await tracked(updateDoc(doc(db,col,id), payload));
-    else { const ref = await tracked(addDoc(collection(db,col), payload)); savedId = ref.id; }
+    else { const ref = doc(collection(db,col)); await tracked(setDoc(ref, payload)); savedId = ref.id; }
     // Best-effort — a hiccup here shouldn't block the save that already
     // succeeded, so failures are swallowed inside autoSeedContact itself.
     if (col === "accounts" && payload.contactName){
@@ -6396,7 +6419,7 @@ async function submitForm(col,id){
         ownerId: payload.ownerId, department: payload.department
       });
     }
-    closeModal(true); toast(S.label + (id?" saved":" created"));
+    closeModal(true); toast(S.label + (id?" saved":" created") + syncNote());
   }catch(e){
     $("#save").disabled = false;
     const box = $("#form-err"); box.textContent = e.message; box.classList.remove("hidden");
@@ -6415,11 +6438,11 @@ async function upsertCanvassCatalog(items, suppliers, canvassDate){
       if (!s?.name) continue;
       const existing = findByName("suppliers", s.name);
       const patch = { lastCanvassDate: date, updatedAt: serverTimestamp() };
-      if (existing) await updateDoc(doc(db,"suppliers",existing.id), patch);
-      else await addDoc(collection(db,"suppliers"), {
+      if (existing) await tracked(updateDoc(doc(db,"suppliers",existing.id), patch));
+      else await tracked(addDoc(collection(db,"suppliers"), {
         name: s.name, contactPerson: s.contact || null, phone: s.tel || null, ...patch,
         ownerId: myUid(), department: state.profile.department,
-        createdAt: serverTimestamp(), createdBy: myUid() });
+        createdAt: serverTimestamp(), createdBy: myUid() }));
     }
     for (const it of (items||[])){
       if (!(it.brand||"").trim() && !(it.model||"").trim() && !(it.desc||"").trim()) continue;
@@ -6431,10 +6454,10 @@ async function upsertCanvassCatalog(items, suppliers, canvassDate){
       const patch = { lastSupplier: suppliers?.[lowIdx]?.name || null, lastCost: low,
                        lastCanvassDate: date, updatedAt: serverTimestamp() };
       const existing = findByName("products", name);
-      if (existing) await updateDoc(doc(db,"products",existing.id), patch);
-      else await addDoc(collection(db,"products"), {
+      if (existing) await tracked(updateDoc(doc(db,"products",existing.id), patch));
+      else await tracked(addDoc(collection(db,"products"), {
         name, ownerId: myUid(), department: state.profile.department,
-        createdAt: serverTimestamp(), createdBy: myUid(), ...patch });
+        createdAt: serverTimestamp(), createdBy: myUid(), ...patch }));
     }
   }catch(e){ console.warn("catalog auto-update", e); }
 }
@@ -7662,7 +7685,7 @@ function openInquiryForm(id, preset){
         await tracked(addDoc(collection(db,"inquiries"), payload));
       }
       await upsertCanvassCatalog(items2, suppliers2, payload.inquiryDate);
-      closeModal(true); toast("Inquiry " + (id?"saved":"created"));
+      closeModal(true); toast("Inquiry " + (id?"saved":"created") + syncNote());
     }catch(e){
       $("#iq-save").disabled = false;
       box.textContent = e.message; box.classList.remove("hidden");
@@ -8172,7 +8195,7 @@ function openCostingForm(id, preset){
       toast(wasApproved
         ? "Costing sheet saved — since it was Approved, editing it reset the status to Submitted for Approval and it needs re-approval."
           + (revertedQuoteNo ? ` Quotation ${revertedQuoteNo} was also sent back to Draft for review.` : "")
-        : "Costing sheet " + (id?"saved":"created"));
+        : "Costing sheet " + (id?"saved":"created") + syncNote());
       if (!id && typeof d.__onSaved === "function") d.__onSaved();
     }catch(e){
       $("#co-save").disabled = false;
