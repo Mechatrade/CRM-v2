@@ -3418,6 +3418,7 @@ function viewList(col){
           i===0 ? `<span class="lnk" data-open="${col}:${d.id}">${esc(titleOf(col,d))}</span>`
           : (["status","stage"].includes(c.k) && c.opts && canWrite(d, col)) ? statusSelect(col, d, c.opts)
           : (col==="accounts" && ["type","priority"].includes(c.k) && c.opts && canWrite(d, col)) ? inlineFieldSelect(col, d, c)
+          : (col==="salesorders" && c.k==="quotationId" && d.quotationId) ? `<span class="lnk" data-qprev="${d.quotationId}" title="Preview the final quotation">${esc(recordTitle("quotations",d.quotationId))}</span>`
           : cell(col,c,d)
         }</td>`).join("")}
         <td class="row-act">
@@ -5496,6 +5497,7 @@ function wireView(){
     const [c,id] = el.dataset.edit.split(":"); openForm(c,id);
   });
   v.querySelectorAll("[data-go]").forEach(el=> el.onclick = ()=> setRoute(el.dataset.go));
+  v.querySelectorAll("[data-qprev]").forEach(el=> el.onclick = e=>{ e.stopPropagation(); previewQuotationById(el.dataset.qprev); });
   // Clickable KPI cards on the dashboard: pre-set that menu's filter (status
   // and/or "just mine"), then jump straight to the already-filtered list —
   // so the number on the card and what you land on always agree.
@@ -6659,6 +6661,7 @@ function openSalesOrderDetail(id){
     </div>
     <div class="modal-f">
       <button class="btn" id="so-view">Preview document</button>
+      ${d.quotationId ? `<button class="btn" id="so-qview">Preview quotation</button>` : ""}
       <button class="btn" id="so-print">Print</button>
       ${canWrite(d,"salesorders") ? "" : `<span class="pill" style="margin-right:8px">${esc(readOnlyNote(d))}</span>`}
       <div class="spacer"></div>
@@ -6668,6 +6671,7 @@ function openSalesOrderDetail(id){
   wireModalOpens($("#modal-root"));
   $("#so-view").onclick = ()=> openSalesOrderPreview(d);
   $("#so-print").onclick = ()=> printSalesOrder(id);
+  const qv = $("#so-qview"); if (qv) qv.onclick = ()=> previewQuotationById(d.quotationId);
   const editBtn = $("#so-edit");
   if (editBtn) editBtn.onclick = ()=>{ closeModal(true); openForm("salesorders", id); };
 }
@@ -9453,6 +9457,12 @@ function printQuoteDoc(q){
   setTimeout(()=>{ w.focus(); w.print(); }, 500);
 }
 
+/* Opens the quotation document preview from anywhere (e.g. a Sales Order). */
+function previewQuotationById(id){
+  const q = state.data.quotations.get(id);
+  if (!q){ toast("That quotation isn't available to you.", true); return; }
+  openQuotePreview(q);
+}
 function printQuote(id){
   const q = state.data.quotations.get(id);
   if (q) printQuoteDoc(q);
