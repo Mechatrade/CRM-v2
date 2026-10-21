@@ -3595,8 +3595,14 @@ function complianceFieldHTML(prefix, f, v){
    registration fields, plus every SUPPLIER_DOCS entry (required and
    optional both shown, so the form matches the Supplier record exactly). */
 function complianceGateFields(){
-  return SCHEMAS.suppliers.fields.filter(f=>
-    SUPPLIER_REQUIRED_FIELDS.includes(f.k) || SUPPLIER_DOCS.some(d=>d.k===f.k));
+  // Contact/registration details only — the "confirmed uploaded" document
+  // checklist and destination-folder links are no longer asked for here.
+  return SCHEMAS.suppliers.fields.filter(f=> SUPPLIER_REQUIRED_FIELDS.includes(f.k));
+}
+function gateMissing(s){
+  if (!s) return ["Supplier record"];
+  return SUPPLIER_REQUIRED_FIELDS.filter(k => !String(s[k]||"").trim())
+    .map(k => SCHEMAS.suppliers.fields.find(f=>f.k===k)?.l || k);
 }
 /* Entry point for "Convert to Sales Order" — checks every supplier behind
    the quotation's costing sheet(s) first. Complete already: goes straight
@@ -3608,7 +3614,7 @@ function startSalesOrderConversion(quotationId){
   const q = state.data.quotations.get(quotationId); if (!q) return;
   const { costingSheets } = traceQuoteChain(q);
   const entries = suppliersBehindQuote(costingSheets);
-  const incomplete = entries.filter(e => !supplierComplianceComplete(e.record));
+  const incomplete = entries.filter(e => gateMissing(e.record).length);
   if (incomplete.length) openSupplierComplianceGate(quotationId, incomplete);
   else openSalesOrderConvertPreview(quotationId);
 }
@@ -3626,7 +3632,7 @@ function openSupplierComplianceGate(quotationId, entries){
           : `This supplier doesn't have a complete file on record yet. Fill in what's missing below — it saves straight to their record in the Suppliers catalog, so this only needs doing once.`}
       </p>
       ${entries.map((e,i)=>{
-        const missing = supplierMissing(e.record);
+        const missing = gateMissing(e.record);
         return `
         <div style="border:1px solid var(--line-2);border-radius:8px;padding:14px 16px;margin-bottom:14px">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
