@@ -4105,7 +4105,7 @@ function taskStatusSelect(a){
 /* ------------------------------------------------------------------ */
 const TYPE_TONE = { "Meeting":"accent", "Site Visit":"warn", "Call":"info", "Demo":"accent",
   "Presentation":"accent", "MOU / Agreement":"info", "Content":"warn", "Email":"", "Task":"",
-  "Inquiry":"info", "Quotation":"accent", "Follow-up":"warn", "Costing":"accent" };
+  "Inquiry":"info", "Quotation":"accent", "Follow-up":"warn", "Costing":"accent", "Lead":"info", "Converted":"accent" };
 function viewCalendar(){
   const f = state.filters.calendar || (state.filters.calendar = { offset:0, day:null });
   const base = new Date(); base.setDate(1); base.setMonth(base.getMonth() + f.offset);
@@ -4132,6 +4132,13 @@ function viewCalendar(){
       .map(i=>({ ...i, _c:"inquiries", dueDate:i.inquiryDate, subject:i.subject||i.controlNo||"Inquiry", type:"Inquiry" })))
     .concat(rows("quotations").filter(q=>q.issueDate)
       .map(q=>({ ...q, _c:"quotations", dueDate:q.issueDate, subject:q.title||q.quoteNo||"Quotation", type:"Quotation" })))
+    // New leads appear on the day they were added. Leads are readable
+    // department-wide, so colleagues' leads show too (open read-only).
+    .concat(rows("leads").filter(l=>l.createdAt)
+      .map(l=>({ ...l, _c:"leads", dueDate:l.createdAt, subject:titleOf("leads",l), type:"Lead" })))
+    // The day a lead became a Customer.
+    .concat(rows("leads").filter(l=>l.status==="Converted" && l.convertedAt)
+      .map(l=>({ ...l, _c:"leads", dueDate:l.convertedAt, subject:titleOf("leads",l)+" → Customer", type:"Converted" })))
     .concat(rows("followups").filter(f=>f.followUpDate)
       .map(f=>({ ...f, _c:"followups", dueDate:f.followUpDate, type:"Follow-up" })))
     .concat(rows("costing").filter(c=>c.status==="Approved" && c.approvedAt)
@@ -4200,7 +4207,7 @@ function viewCalendar(){
         <td>${shared
           ? `<span style="color:var(--muted)">${esc(userName(a.ownerId))}'s ${(a.type||"task").toLowerCase()}</span>`
           : `<span class="lnk" data-open="${a._c||"activities"}:${a.id}">${esc(a.subject)}${a._wasRescheduled?` <span style="color:var(--muted);font-weight:400">— original date, since rescheduled</span>`:""}</span>
-             <div style="font-size:11.5px;color:var(--muted)">${esc(["quotations","costing"].includes(a._c) ? recordTitle("accounts",a.accountId) : refLabel("dynamic",a.relatedId,a))}</div>`}
+             <div style="font-size:11.5px;color:var(--muted)">${esc(a._c==="leads" ? "Added by " + userName(a.ownerId) : ["quotations","costing"].includes(a._c) ? recordTitle("accounts",a.accountId) : refLabel("dynamic",a.relatedId,a))}</div>`}
         </td>
         ${isManager()?`<td style="font-size:12.5px">${esc(userName(a.ownerId))}</td>`:""}
         <td class="row-act">${pillFor("status",a.status)}</td>
