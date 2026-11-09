@@ -9377,7 +9377,9 @@ function quoteDocHTML(q){
     <div class="tot">
       <div><span>Subtotal</span><span>${money(t.sub)}</span></div>
       ${t.disc?`<div><span>Discount (${q.discountPct}%)</span><span>−${money(t.disc)}</span></div>`:""}
-      ${t.tax?`<div><span>VAT (${q.taxPct}%)</span><span>${money(t.tax)}</span></div>`:""}
+      ${t.tax
+        ? `<div><span>VAT Inc (${q.taxPct}%)</span><span>${money(t.tax)}</span></div>`
+        : `<div><span>VAT Ex</span><span>—</span></div>`}
       <div class="g"><span>TOTAL</span><span>${money(t.total)}</span></div>
     </div>
 
