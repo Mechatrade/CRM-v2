@@ -1504,6 +1504,14 @@ function myLeads(){
 const rows = c => {
   const all = Array.from(state.data[c].values());
   if (SHARED_COLLECTIONS.includes(c)) return all;      // one registry for everyone
+  // Sales Operations Specialists can PICK any department's lead on an
+  // inquiry (see allLeadsForPicker), but everywhere else — the Leads list,
+  // calendar, counts — they still see only their own department's leads.
+  if (c === "leads" && state.profile?.role === "sales_operations_specialist"){
+    const u = myUid();
+    return all.filter(l => l.department === state.profile.department
+      || l.ownerId===u || l.createdBy===u || l.accountManagerId===u || l.sourcedBy===u);
+  }
   if (!state.workspace || state.workspace === "Admin") return all;
   // Records owned by an administrator belong to no single department, so they
   // stay visible in every workspace rather than disappearing. Department is
@@ -2270,6 +2278,10 @@ function isSalesOpsStaff(){ return ["procurement_officer","sales_operations_spec
 function scopeQueries(col){
   const base = collection(db, col);
   if (isAdmin() || SHARED_COLLECTIONS.includes(col)) return [ query(base) ];
+  // Sales Operations Specialist: every lead across departments, so an
+  // inquiry can be raised for any department's lead (matches the leads rule).
+  if (col === "leads" && state.profile.role === "sales_operations_specialist")
+    return [ query(base) ];
   const qs = [];
   if (state.profile.tier === "manager")
     qs.push(query(base, where("department","==", state.profile.department)));
@@ -6217,7 +6229,11 @@ function myDynamicOptions(type, sel){
   const map = { Lead:"leads", Account:"accounts" };
   const c = map[type] || "leads";
   const mine = r => r.ownerId === myUid() || r.createdBy === myUid();
-  let list = rows(c).filter(r=> mine(r) || r.id===sel);
+  // Sales Operations Specialist picks from the whole company's leads and
+  // accounts; everyone else only from their own.
+  const wide = state.profile?.role === "sales_operations_specialist";
+  const source = (wide && c==="leads") ? Array.from(state.data.leads.values()) : rows(c);
+  let list = source.filter(r=> wide || mine(r) || r.id===sel);
   // A converted lead has already become an Account — it shouldn't still be
   // pickable as "Lead" here, or a new inquiry could get pinned to a record
   // that's no longer where that customer's data actually lives.
