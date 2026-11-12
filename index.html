@@ -1495,6 +1495,19 @@ const esc = s => String(s??"").replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;",
    COUNTS leads (nav badges, dashboards, reports) should still reflect only
    the signed-in person's own, as before — managers/admins keep their
    wider view. */
+/* Inquiries, Costing and Quotations are readable by everyone signed in
+   (so any department can look up another's work), but counts, dashboards,
+   reports, approval queues and the calendar should keep reflecting only
+   what this person is actually involved in — their own, their department's
+   (managers) or the Sales department (Sales Ops roles). Admin sees all. */
+function seen(c){
+  const all = rows(c);
+  if (isAdmin()) return all;
+  const u = myUid(), dept = state.profile.department;
+  return all.filter(d => d.ownerId===u || d.createdBy===u || d.accountManagerId===u || d.sourcedBy===u
+    || (isManager() && d.department===dept)
+    || (isSalesOpsStaff() && d.department==="Sales"));
+}
 function myLeads(){
   const all = rows("leads");
   if (isAdmin() || isManager()) return all;
@@ -2282,6 +2295,9 @@ function scopeQueries(col){
   // inquiry can be raised for any department's lead (matches the leads rule).
   if (col === "leads" && state.profile.role === "sales_operations_specialist")
     return [ query(base) ];
+  // Inquiries, Costing and Quotations are readable company-wide (read-only
+  // unless they're yours) — matches the read rule on those three.
+  if (["inquiries","costing","quotations"].includes(col)) return [ query(base) ];
   const qs = [];
   if (state.profile.tier === "manager")
     qs.push(query(base, where("department","==", state.profile.department)));
@@ -2393,7 +2409,7 @@ function salesNavGroups(dept){
 
     { group:"Sales & Quotation Management", depts, items:[
       { id:"inquiries",  label:"Customer / Lead Inquiry", icon:"◐", depts,
-        count:()=>rows("inquiries").filter(i=>i.status==="Open").length },
+        count:()=>seen("inquiries").filter(i=>i.status==="Open").length },
       { id:"costing",    label:"Product Costing", icon:"⌬", depts },
       { id:"quotations", label:"Quotations",      icon:"❑", depts, count:openQuoteCount },
       { id:"followups",  label:"Follow-ups",      icon:"↻", depts,
@@ -2726,9 +2742,17 @@ function renderLinks(v){
    full form — and therefore can't accidentally alter the figures. */
 /* Mirrors the security rules exactly, so the interface never offers an
    edit the database will refuse. */
+/* Costing sheets carry supplier cost and margin, so editing is limited to
+   the person who made it (and administrators) — managers, account
+   managers and Sales Ops staff can read them but not edit. Managers of the
+   sheet's department can still Approve / Reject / send back to Draft. */
+function costingApprover(d){
+  return !!d && isManager() && d.department === state.profile.department;
+}
 function canWrite(d, col){
   if (!d) return false;
   if (isAdmin()) return true;
+  if (col === "costing") return d.ownerId === myUid() || d.createdBy === myUid();
   if (d.ownerId === myUid() || d.createdBy === myUid()) return true;
   if (d.accountManagerId === myUid()) return true;        // you hold the customer
   if (isManager() && d.department === state.profile.department)
@@ -2745,6 +2769,8 @@ const canEditRecord = canWrite;
 /* Why an edit is blocked, in plain words. */
 function readOnlyNote(d){
   const who = userName(d.ownerId);
+  if (d.controlNo && d.items === undefined && d.gpPct !== undefined)
+    return `Read-only — only ${who} (or an administrator) can edit this costing sheet.`;
   return isManager() && d.department === state.profile.department
     ? `Read-only — ${who} owns this. Editing colleagues' records is switched off in Settings.`
     : `Read-only — this belongs to ${who}.`;
@@ -2753,7 +2779,7 @@ function statusSelect(col, d, opts){
   const now = col === "quotations" ? quoteStatus(d)
             : col === "deals" ? (d.stage || "")
             : (d.status || "");
-  if (!canEditRecord(d)) return pillFor("status", now);
+  if (col==="costing" ? !(canWrite(d,"costing") || costingApprover(d)) : !canEditRecord(d)) return pillFor("status", now);
   // Approving/rejecting a costing sheet, and approving/declining a
   // quotation, is a manager or admin call — a rep can move it up to review
   // but can't sign off on their own record. The current value stays
@@ -3118,7 +3144,7 @@ function myQuotationSnapshot(){
 function viewAdminOverview(){
   const depts = ["Sales","Business Development","Marketing"];
   const deals = rows("deals"), leads = rows("leads");
-  const inquiries = rows("inquiries"), quotes = rows("quotations"), costing = rows("costing");
+  const inquiries = seen("inquiries"), quotes = seen("quotations"), costing = seen("costing");
   const ms = monthStart();
   const wonAll = wonThisMonth(deals);
   const wonAllVal = wonAll.reduce((s,d)=>s+Number(d.value||0),0);
@@ -3344,7 +3370,7 @@ function viewList(col){
   }[col];
 
   const lowGpPending = (col==="costing" && isAdmin())
-    ? rows("costing").filter(c=>c.status==="Submitted for Approval" && Number(c.gpPct||0) < GP_APPROVAL_THRESHOLD)
+    ? seen("costing").filter(c=>c.status==="Submitted for Approval" && Number(c.gpPct||0) < GP_APPROVAL_THRESHOLD)
     : [];
   const lowGpBanner = lowGpPending.length ? `
   <div class="card" style="padding:12px 16px;margin-bottom:14px;border-color:var(--warn);background:var(--warn-weak)">
@@ -3428,7 +3454,7 @@ function viewList(col){
       ${list.map(d=>`<tr>
         ${cols.map((c,i)=>`<td class="${["money","number"].includes(c.type)?"num":""}">${
           i===0 ? `<span class="lnk" data-open="${col}:${d.id}">${esc(titleOf(col,d))}</span>`
-          : (["status","stage"].includes(c.k) && c.opts && canWrite(d, col)) ? statusSelect(col, d, c.opts)
+          : (["status","stage"].includes(c.k) && c.opts && (canWrite(d, col) || (col==="costing" && costingApprover(d)))) ? statusSelect(col, d, c.opts)
           : (col==="accounts" && ["type","priority"].includes(c.k) && c.opts && canWrite(d, col)) ? inlineFieldSelect(col, d, c)
           : (col==="salesorders" && c.k==="quotationId" && d.quotationId) ? `<span class="lnk" data-qprev="${d.quotationId}" title="Preview the final quotation">${esc(recordTitle("quotations",d.quotationId))}</span>`
           : cell(col,c,d)
@@ -3437,8 +3463,8 @@ function viewList(col){
           ${canWrite(d, col) ? `
             ${col==="leads" && d.status==="Qualified" ? `<button class="btn sm" data-convert="${d.id}">Convert</button> `:""}
             ${col==="activities" && d.status!=="Completed" ? `<button class="btn sm" data-donebtn="${d.id}">Done</button> `:""}
-            ${col==="inquiries" ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
-            ${col==="costing" && d.status==="Approved" ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
+            ${col==="inquiries" && canWrite(d,col) ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
+            ${col==="costing" && d.status==="Approved" && canWrite(d,col) ? `<button class="btn sm" data-proceed="${col}:${d.id}">Proceed →</button> `:""}
             ${col==="quotations" && quoteStatus(d)==="Approved" && (d.ownerId===myUid()||isAdmin()) && !rows("salesorders").some(so=>so.quotationId===d.id) ? `<button class="btn sm" data-convert-so="${d.id}">Convert</button> `:""}
             <button class="btn sm" data-edit="${col}:${d.id}">Edit</button>`
           : `<span class="pill" title="${esc(readOnlyNote(d))}">${esc(initials(userName(d.ownerId)))}</span>`}
@@ -3492,7 +3518,7 @@ function seriesAudit(){
 }
 
 function openQuoteCount(){            // declared, so the NAV table can use it
-  return rows("quotations").filter(q=>["Draft","Sent","Viewed"].includes(quoteStatus(q))).length;
+  return seen("quotations").filter(q=>["Draft","Sent","Viewed"].includes(quoteStatus(q))).length;
 }
 function openTasks(){ return rows("activities").filter(a=>a.status!=="Completed" && a.dueDate && canWrite(a)); }
 function isToday(v){ const d=toDate(v); if(!d) return false;
@@ -4140,9 +4166,9 @@ function viewCalendar(){
       .map(a=>({ ...a, _c:"activities", dueDate:a.originalDueDate, _wasRescheduled:true })))
     .concat(rows("content").filter(c=>c.publishDate)
       .map(c=>({ ...c, _c:"content", dueDate:c.publishDate, subject:c.title, type:"Content" })))
-    .concat(rows("inquiries").filter(i=>i.inquiryDate)
+    .concat(seen("inquiries").filter(i=>i.inquiryDate)
       .map(i=>({ ...i, _c:"inquiries", dueDate:i.inquiryDate, subject:i.subject||i.controlNo||"Inquiry", type:"Inquiry" })))
-    .concat(rows("quotations").filter(q=>q.issueDate)
+    .concat(seen("quotations").filter(q=>q.issueDate)
       .map(q=>({ ...q, _c:"quotations", dueDate:q.issueDate, subject:q.title||q.quoteNo||"Quotation", type:"Quotation" })))
     // New leads appear on the day they were added. Leads are readable
     // department-wide, so colleagues' leads show too (open read-only).
@@ -4153,7 +4179,7 @@ function viewCalendar(){
       .map(l=>({ ...l, _c:"leads", dueDate:l.convertedAt, subject:titleOf("leads",l)+" → Customer", type:"Converted" })))
     .concat(rows("followups").filter(f=>f.followUpDate)
       .map(f=>({ ...f, _c:"followups", dueDate:f.followUpDate, type:"Follow-up" })))
-    .concat(rows("costing").filter(c=>c.status==="Approved" && c.approvedAt)
+    .concat(seen("costing").filter(c=>c.status==="Approved" && c.approvedAt)
       .map(c=>({ ...c, _c:"costing", dueDate:c.approvedAt, subject:c.itemsSummary||c.controlNo||"Product costing", type:"Costing" })));
   const byDay = new Map();
   acts.forEach(a=>{
@@ -5087,7 +5113,7 @@ function buildSalesReport(from, to){
 }
 
 function buildQuotationReport(from, to){
-  const qs = rows("quotations").filter(q=>inRange(q.issueDate, from, to));
+  const qs = seen("quotations").filter(q=>inRange(q.issueDate, from, to));
   const byStatus = new Map();
   qs.forEach(q=>{ const k=quoteStatus(q); byStatus.set(k,(byStatus.get(k)||0)+1); });
   const total = qs.length, totalVal = qs.reduce((s,q)=>s+Number(q.total||0),0);
@@ -5142,7 +5168,7 @@ function buildCustomerReport(from, to){
   const rowsOut = accts.map(a=>{
     const deals = rows("deals").filter(d=>d.accountId===a.id && inRange(d.closedAt||d.createdAt, from, to));
     const won = deals.filter(d=>d.stage==="Won");
-    const quotes = rows("quotations").filter(q=>q.accountId===a.id && inRange(q.issueDate, from, to));
+    const quotes = seen("quotations").filter(q=>q.accountId===a.id && inRange(q.issueDate, from, to));
     const orders = rows("salesorders").filter(so=>so.accountId===a.id && inRange(so.createdAt, from, to));
     return {
       a, wonVal: won.reduce((s,d)=>s+Number(d.value||0),0), wonN: won.length,
@@ -5169,7 +5195,7 @@ function buildCustomerReport(from, to){
    how often an item gets canvassed, its latest cost, and how many
    suppliers cover it. */
 function buildProductPerformanceReport(from, to){
-  const inquiries = rows("inquiries").filter(c=>inRange(c.inquiryDate, from, to)), products = rows("products");
+  const inquiries = seen("inquiries").filter(c=>inRange(c.inquiryDate, from, to)), products = rows("products");
   const byProduct = new Map();
   inquiries.forEach(c=>{
     (c.items||[]).forEach(it=>{
