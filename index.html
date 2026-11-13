@@ -1508,6 +1508,14 @@ function seen(c){
     || (isManager() && d.department===dept)
     || (isSalesOpsStaff() && d.department==="Sales"));
 }
+/* The Sales Person a quotation is for = whoever holds that customer's
+   account: the Sales Person set on the customer, else its account manager,
+   else whatever was stamped on the quotation when it was created. */
+function quoteSalesPerson(q, acct){
+  return acct?.salesPerson
+      || (acct?.accountManagerId ? userName(acct.accountManagerId) : "")
+      || q.salesPerson || "";
+}
 function myLeads(){
   const all = rows("leads");
   if (isAdmin() || isManager()) return all;
@@ -8497,8 +8505,9 @@ function openQuoteForm(id, preset){
           </select>
           <span class="hint" id="q-deal-hint"></span></div>
         <div class="field"><label for="q-owner">Owner</label>
-          <select id="q-owner"${isManager()?"":" disabled"}>
-            ${isManager()?ownerOptions(q.ownerId||myUid()):`<option value="${myUid()}">${esc(state.profile.displayName||"You")}</option>`}</select></div>
+          <select id="q-owner" disabled title="The person who creates a quotation stays its owner">
+            <option value="${esc(q.ownerId||myUid())}">${esc(userName(q.ownerId||myUid()) || state.profile.displayName || "You")}</option></select>
+          <span class="hint">Always the person who created it.</span></div>
         <div class="field"><label for="q-issue">Issued</label>
           <input id="q-issue" type="date" value="${esc(q.issueDate||today)}"></div>
         <div class="field"><label for="q-valid">Valid until</label>
@@ -8597,7 +8606,7 @@ function openQuoteForm(id, preset){
   function refreshNumber(){
     const hint = $("#q-no-hint");
     if (id){ hint.textContent = "Numbers can't be changed once issued."; return; }
-    const owner = isManager() ? ($("#q-owner").value || myUid()) : myUid();
+    const owner = myUid();
     const dept = quoteDeptOf(owner);
     const key = counterKey(dept, $("#q-issue").value);
     const free = releasedNumbers(key);
@@ -8670,7 +8679,7 @@ function openQuoteForm(id, preset){
       discountPct:Number($("#q-disc").value||0)||null,
       taxPct:Number($("#q-tax").value||0)||null,
       terms:$("#q-terms").value||null,
-      ownerId: isManager() ? ($("#q-owner").value || myUid()) : (q.ownerId || myUid()),
+      ownerId: q.ownerId || myUid(),
       revision: q.revision || 0,
       previousVersions: q.previousVersions || [],
       controlNo: q.controlNo || null
@@ -8709,7 +8718,7 @@ function openQuoteForm(id, preset){
       box.textContent = "Add at least one line item."; box.classList.remove("hidden"); return;
     }
     const t = quoteTotals(items2, $("#q-disc").value, $("#q-tax").value);
-    const ownerId = isManager() ? ($("#q-owner").value || myUid()) : (q.ownerId || myUid());
+    const ownerId = q.ownerId || myUid();      // fixed: whoever created it stays its owner
     const payload = {
       title:$("#q-title").value.trim(),
       accountId:$("#q-acct").value||null, leadId: $("#q-acct").value ? null : ($("#q-leadid")?.value || null),
@@ -9382,7 +9391,7 @@ function quoteDocHTML(q){
       </div>
       <div>
         <div class="cap">Prepared by</div>
-        <div class="who">${esc(userName(q.createdBy || q.ownerId) || "—")}</div>
+        <div class="who">${esc(quoteSalesPerson(q, acct) || userName(q.createdBy || q.ownerId) || "—")}</div>
         <div>${esc(st.companyName || "")}</div>
         ${st.companyEmail?`<div>${esc(st.companyEmail)}</div>`:""}
       </div>
@@ -9437,7 +9446,7 @@ function quoteDocHTML(q){
       <div><div class="cap">Prepared by</div>
         <div class="line">${esc(userName(q.createdBy || q.ownerId) || "")} — Signature over printed name</div></div>
       <div><div class="cap">Sales Person</div>
-        <div class="line">${esc(q.salesPerson || acct?.salesPerson || "")}${(q.salesPerson || acct?.salesPerson) ? " — " : ""}Signature over printed name / Date</div></div>
+        <div class="line">${esc(quoteSalesPerson(q, acct))}${quoteSalesPerson(q, acct) ? " — " : ""}Signature over printed name / Date</div></div>
     </div>
 
     <div class="foot">${esc(st.companyName || "")}${st.companyWeb?" · "+esc(st.companyWeb):""}
