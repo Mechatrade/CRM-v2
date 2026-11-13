@@ -9382,7 +9382,7 @@ function quoteDocHTML(q){
       </div>
       <div>
         <div class="cap">Prepared by</div>
-        <div class="who">${esc(userName(q.ownerId) || "—")}</div>
+        <div class="who">${esc(userName(q.createdBy || q.ownerId) || "—")}</div>
         <div>${esc(st.companyName || "")}</div>
         ${st.companyEmail?`<div>${esc(st.companyEmail)}</div>`:""}
       </div>
@@ -9435,9 +9435,9 @@ function quoteDocHTML(q){
 
     <div class="sign">
       <div><div class="cap">Prepared by</div>
-        <div class="line">${esc(userName(q.ownerId) || "")} — Signature over printed name</div></div>
-      <div><div class="cap">Conforme</div>
-        <div class="line">Signature over printed name / Date</div></div>
+        <div class="line">${esc(userName(q.createdBy || q.ownerId) || "")} — Signature over printed name</div></div>
+      <div><div class="cap">Sales Person</div>
+        <div class="line">${esc(q.salesPerson || acct?.salesPerson || "")}${(q.salesPerson || acct?.salesPerson) ? " — " : ""}Signature over printed name / Date</div></div>
     </div>
 
     <div class="foot">${esc(st.companyName || "")}${st.companyWeb?" · "+esc(st.companyWeb):""}
