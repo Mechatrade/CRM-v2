@@ -1125,6 +1125,7 @@ const LEAD_STATUS_GUIDE = {
   "Qualified":    { emoji:"⭐", condition:"Lead has a clear need/potential requirement and is considered a legitimate sales opportunity." },
   "Unresponsive": { emoji:"⚪", condition:"Salesperson has made multiple contact attempts but the lead has not responded." }
 };
+const CALL_STATUSES = ["To call","Called","Call back","No answer","Not interested","Became a lead"];
 const SCHEMAS = {
   leads: {
     label:"Lead", plural:"Leads", icon:"◔", titleField:"company",
@@ -1409,13 +1410,12 @@ const SCHEMAS = {
   calllist: {
     label:"Prospect", plural:"Prospecting call list", icon:"☏", titleField:"company",
     fields:[
-      { k:"company",       l:"Company",         type:"text",   req:true, table:true },
-      { k:"contactPerson", l:"Contact person",  type:"text",   table:true },
-      { k:"phone",         l:"Phone",           type:"text",   table:true },
-      { k:"status",        l:"Status",          type:"select", opts:["To call","Called","Call back","No answer","Not interested","Became a lead"], def:"To call", table:true },
-      { k:"nextCallDate",  l:"Call again on",   type:"date",   table:true },
-      { k:"ownerId",       l:"Owner",           type:"ref",    refTo:"users", table:true, assignOnly:true },
-      { k:"notes",         l:"Notes",           type:"textarea", full:true }
+      { k:"company",      l:"Company name",   type:"text",   req:true, table:true },
+      { k:"callerId",     l:"Caller",         type:"ref",    refTo:"users", table:true },
+      { k:"targetDate",   l:"Target call date", type:"date", table:true },
+      { k:"status",       l:"Status",         type:"select", opts:CALL_STATUSES, def:"To call", table:true },
+      { k:"nextCallDate", l:"Call again on",  type:"date",   table:true },
+      { k:"notes",        l:"Notes",          type:"text" }
     ]
   },
   salesorders: {
@@ -2300,7 +2300,7 @@ function openChangePasswordModal(){
    matter which department first met them. Contacts are narrower — visible
    only to whoever owns/created them, the parent account's manager, or a
    manager overseeing that department (see canSee() in the rules). */
-const SHARED_COLLECTIONS = ["accounts","products","suppliers"];
+const SHARED_COLLECTIONS = ["accounts","products","suppliers","calllist"];
 // Manager and Supervisor tier already see their whole department via the
 // generic tier check below — this constant exists only to bring staff-tier
 // roles that need the same visibility (Procurement Officer, Sales
@@ -2313,6 +2313,9 @@ const SALES_OPS_COLLECTIONS = ["inquiries","costing","quotations","followups","d
 function isSalesOpsStaff(){ return ["procurement_officer","sales_operations_specialist"].includes(state.profile?.role); }
 function scopeQueries(col){
   const base = collection(db, col);
+  // The Business Development call list is one shared sheet — only BD and
+  // admins read it, so nobody else subscribes.
+  if (col === "calllist" && !(isAdmin() || state.profile.department === "Business Development")) return [];
   if (isAdmin() || SHARED_COLLECTIONS.includes(col)) return [ query(base) ];
   // Sales Operations Specialist: every lead across departments, so an
   // inquiry can be raised for any department's lead (matches the leads rule).
@@ -2624,6 +2627,7 @@ const NEW_FOR = { leads:"leads", pipeline:"deals", accounts:"accounts", contacts
 $("#new-btn").onclick = ()=>{
   if (state.route === "team")     return openUserForm();
   if (state.route === "settings") return setRoute("team");
+  if (state.route === "calllist"){ $("#cs-company")?.focus(); return; }
   openForm(NEW_FOR[state.route] || "leads");
 };
 
@@ -2644,6 +2648,9 @@ const TITLES = { dashboard:"Dashboard", leads:"Leads", pipeline:"Opportunities",
                  salesorders:"Sales Orders", products:"Products", suppliers:"Suppliers" };
 function render(){
   if(!state.profile) return;
+  // The call list is typed into like a spreadsheet — don't rebuild it under
+  // someone's cursor; catch up as soon as they leave the sheet.
+  if (state.route === "calllist" && callSheetBusy()){ callPending = true; return; }
   $("#view-title").textContent = TITLES[state.route] || "Mechatrade";
   // Admin is a monitoring/approval role, not a data-entry one — creating
   // business records stays with the reps who own them, so the New button
@@ -2671,9 +2678,11 @@ function render(){
     case "team":       v.innerHTML = viewTeam();      break;
     case "activity":   v.innerHTML = viewActivityHistory(); break;
     case "settings":   v.innerHTML = viewSettings();  break;
+    case "calllist":   v.innerHTML = viewCallSheet(); break;
     default:           v.innerHTML = viewList(state.route);
   }
   wireView();
+  if (state.route === "calllist") wireCallSheet();
 }
 /* ------------------------------------------------------------------ */
 /* 9. SHARED RENDER HELPERS                                            */
@@ -3340,6 +3349,176 @@ function marketingTeamSnapshot(){
 }
 
 /* ------------------------------------------------------------------ */
+/* BD PROSPECTING CALL LIST — a spreadsheet-style sheet                */
+/* ------------------------------------------------------------------ */
+let callPending = false;
+let callFilter = { status:"", caller:"" };
+const callBlank = ()=>({ company:"", callerId: (state.users.get(myUid())?.department==="Business Development" ? myUid() : ""),
+  targetDate: todayISO(), status:"To call", nextCallDate:"", notes:"" });
+let callNew = null;
+function callSheetBusy(){
+  const a = document.activeElement;
+  return !!(a && a.closest && a.closest("#callsheet") && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName));
+}
+function callers(){
+  return Array.from(state.users.values())
+    .filter(u=>u.department==="Business Development" && u.active!==false)
+    .sort((a,b)=>String(a.displayName||"").localeCompare(String(b.displayName||"")));
+}
+/* Status "Call back" + a date → the note reads " - call again in <date>". */
+function callAutoNote(status, dateISO, notes){
+  const strip = String(notes||"").replace(/\s*-\s*call again in [^\n]*$/i, "").trimEnd();
+  if (status !== "Call back" || !dateISO) return strip;
+  const nice = fmtDate(dateISO);
+  return (strip ? strip + "\n" : "") + `- call again in ${nice}`;
+}
+function callRowHTML(d, isNew){
+  const dis = isNew ? "" : "";
+  const who = callers();
+  const callerOpts = `<option value="">— choose —</option>` + who.map(u=>
+    `<option value="${u.id}"${u.id===d.callerId?" selected":""}>${esc(u.displayName||u.loginName||u.id)}</option>`).join("")
+    + (d.callerId && !who.some(u=>u.id===d.callerId) ? `<option value="${esc(d.callerId)}" selected>${esc(userName(d.callerId))}</option>` : "");
+  const stamp = isNew ? `<span style="color:var(--faint)">Stamped when added</span>`
+    : (d.createdAt ? esc(toDate(d.createdAt).toLocaleString("en-PH",{ day:"2-digit", month:"short", year:"numeric", hour:"numeric", minute:"2-digit", timeZone:"Asia/Manila" })) : "just now");
+  const k = f=>`data-f="${f}"`;
+  return `<tr data-id="${isNew?"":d.id}" ${isNew?'id="cs-newrow" style="background:var(--panel-2)"':""}>
+    <td class="mono" style="font-size:12px;white-space:nowrap">${stamp}</td>
+    <td><input ${k("company")} ${isNew?'id="cs-company"':""} value="${esc(d.company||"")}" placeholder="${isNew?"Type a company name…":""}" style="width:100%"></td>
+    <td><select ${k("callerId")}>${callerOpts}</select></td>
+    <td><input type="date" ${k("targetDate")} value="${esc(d.targetDate||"")}"></td>
+    <td><select ${k("status")}>${CALL_STATUSES.map(o=>`<option${o===d.status?" selected":""}>${o}</option>`).join("")}</select></td>
+    <td><input type="date" ${k("nextCallDate")} value="${esc(d.nextCallDate||"")}"></td>
+    <td><textarea ${k("notes")} rows="1" placeholder="Ctrl+Enter for the next note" style="width:100%;min-width:220px;resize:vertical;min-height:34px">${esc(d.notes||"")}</textarea></td>
+    <td style="white-space:nowrap">${isNew
+      ? `<button class="btn pri sm" id="cs-add">Add</button>`
+      : `<button class="btn sm" data-del title="Remove this row">✕</button>`}</td>
+  </tr>`;
+}
+function viewCallSheet(){
+  if (!callNew) callNew = callBlank();
+  let list = rows("calllist").slice();
+  if (callFilter.status) list = list.filter(d=>d.status===callFilter.status);
+  if (callFilter.caller) list = list.filter(d=>d.callerId===callFilter.caller);
+  list.sort((a,b)=> (toDate(b.createdAt)?.getTime() ?? Date.now()) - (toDate(a.createdAt)?.getTime() ?? Date.now()));
+  const total = rows("calllist").length;
+  return `<div id="callsheet">
+    <div class="toolbar" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+      <select id="cs-fstatus"><option value="">All statuses</option>${CALL_STATUSES.map(o=>`<option${o===callFilter.status?" selected":""}>${o}</option>`).join("")}</select>
+      <select id="cs-fcaller"><option value="">All callers</option>${callers().map(u=>`<option value="${u.id}"${u.id===callFilter.caller?" selected":""}>${esc(u.displayName||u.id)}</option>`).join("")}</select>
+      <div style="flex:1"></div>
+      <span class="eyebrow">${list.length} of ${total}</span>
+    </div>
+    <div style="overflow:auto">
+    <table class="tbl" style="min-width:1050px">
+      <thead><tr><th>Timestamp</th><th style="min-width:220px">Company name</th><th>Caller</th>
+        <th>Target call date</th><th>Status</th><th>Call again on</th><th style="min-width:220px">Notes</th><th></th></tr></thead>
+      <tbody>
+        ${callRowHTML(callNew, true)}
+        ${list.map(d=>callRowHTML(d,false)).join("")}
+      </tbody>
+    </table></div>
+    <p class="hint" style="margin-top:10px">Type in the top row and press <b>Add</b> (or Enter). In Notes, <b>Ctrl+Enter</b> starts the next note on a new line. Changes to any row below save automatically when you leave the field.
+    Choosing <b>Call back</b> with a date writes “- call again in …” into Notes for you.</p>
+  </div>`;
+}
+function wireCallSheet(){
+  const root = $("#callsheet"); if (!root) return;
+  $("#cs-fstatus").onchange = e=>{ callFilter.status = e.target.value; callPending=false; render(); };
+  $("#cs-fcaller").onchange = e=>{ callFilter.caller = e.target.value; callPending=false; render(); };
+  root.addEventListener("focusout", ()=> setTimeout(()=>{
+    if (callPending && !callSheetBusy()){ callPending = false; render(); }
+  }, 0));
+  const readRow = tr=>{
+    const o = {}; tr.querySelectorAll("[data-f]").forEach(el=> o[el.dataset.f] = el.value.trim ? el.value.trim() : el.value);
+    return o;
+  };
+  const refreshNote = tr=>{
+    const o = readRow(tr), n = tr.querySelector('[data-f="notes"]');
+    n.value = callAutoNote(o.status, o.nextCallDate, n.value);
+  };
+  // the entry row
+  const nr = $("#cs-newrow");
+  const addRow = async ()=>{
+    refreshNote(nr);
+    const o = readRow(nr);
+    if (!o.company){ toast("Type the company name first.", true); $("#cs-company").focus(); return; }
+    $("#cs-add").disabled = true;
+    const me = myUid();
+    try{
+      const ref = doc(collection(db,"calllist"));
+      await tracked(setDoc(ref, {
+        company:o.company, callerId:o.callerId||null, targetDate:o.targetDate||null,
+        status:o.status||"To call", nextCallDate:o.nextCallDate||null, notes:o.notes||null,
+        ownerId:o.callerId||me, department:"Business Development", createdBy:me,
+        createdAt:serverTimestamp(), updatedAt:serverTimestamp(), updatedBy:me
+      }));
+      callNew = callBlank(); callPending = false;
+      toast("Added to the call list" + syncNote());
+      render(); $("#cs-company")?.focus();
+    }catch(e){
+      $("#cs-add").disabled = false; toast(e.message || "Couldn't add it.", true);
+    }
+  };
+  $("#cs-add").onclick = addRow;
+  // Enter adds the row; Ctrl+Enter in Notes starts the next note on a new line.
+  nr.addEventListener("keydown", e=>{
+    if (e.key !== "Enter") return;
+    const inNotes = e.target.matches('[data-f="notes"]');
+    if (inNotes && (e.ctrlKey || e.metaKey)){
+      e.preventDefault();
+      const t = e.target, p = t.selectionStart;
+      t.value = t.value.slice(0,p) + "\n" + t.value.slice(t.selectionEnd);
+      t.selectionStart = t.selectionEnd = p + 1;
+      t.rows = Math.min(6, t.value.split("\n").length);
+      return;
+    }
+    e.preventDefault(); addRow();
+  });
+  nr.addEventListener("change", e=>{
+    if (e.target.matches('[data-f="status"],[data-f="nextCallDate"]')) refreshNote(nr);
+    callNew = readRow(nr);
+  });
+  // existing rows save themselves
+  root.querySelectorAll("tbody tr[data-id]").forEach(tr=>{
+    if (!tr.dataset.id) return;
+    const id = tr.dataset.id;
+    const nt = tr.querySelector('[data-f="notes"]');
+    nt.rows = Math.min(6, Math.max(1, nt.value.split("\n").length));
+    nt.addEventListener("keydown", e=>{
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey){                 // Ctrl+Enter: next note on a new line
+        const p = nt.selectionStart;
+        nt.value = nt.value.slice(0,p) + "\n" + nt.value.slice(nt.selectionEnd);
+        nt.selectionStart = nt.selectionEnd = p + 1;
+        nt.rows = Math.min(6, nt.value.split("\n").length);
+      } else nt.blur();                            // Enter: save and leave the field
+    });
+    tr.addEventListener("change", async e=>{
+      const el = e.target.closest("[data-f]"); if (!el) return;
+      if (el.matches('[data-f="status"],[data-f="nextCallDate"]')) refreshNote(tr);
+      const o = readRow(tr);
+      if (!o.company){ toast("A company name is needed.", true);
+        tr.querySelector('[data-f="company"]').value = state.data.calllist.get(id)?.company || ""; return; }
+      try{
+        await tracked(updateDoc(doc(db,"calllist",id), {
+          company:o.company, callerId:o.callerId||null, targetDate:o.targetDate||null,
+          status:o.status, nextCallDate:o.nextCallDate||null, notes:o.notes||null,
+          ownerId:o.callerId||state.data.calllist.get(id)?.ownerId||myUid(),
+          updatedAt:serverTimestamp(), updatedBy:myUid()
+        }));
+        toast("Saved" + syncNote());
+      }catch(err){ toast(err.message || "Couldn't save.", true); }
+    });
+    tr.querySelector("[data-del]").onclick = async ()=>{
+      if (!confirm("Remove this row from the call list?")) return;
+      try{ await tracked(deleteDoc(doc(db,"calllist",id))); toast("Removed" + syncNote()); }
+      catch(err){ toast(err.message || "Couldn't remove it.", true); }
+    };
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* 11. GENERIC LIST VIEW                                               */
 /* ------------------------------------------------------------------ */
 function viewList(col){
@@ -3456,7 +3635,6 @@ function viewList(col){
       ${f.showConverted ? "Hide converted" : `Show converted (${convertedLeads.length})`}
     </button>`:""}
     <div style="flex:1"></div>
-    ${col==="calllist" ? `<button class="btn pri" data-calladd title="Type or paste several companies at once">+ Add several</button>` : ""}
     ${["inquiries","costing","quotations","followups"].includes(col) ? "" : `<button class="btn" data-import="${col}" title="Paste from Excel or upload a CSV">Import</button>`}
     ${col==="quotations" ? seriesBadge() : ""}
     ${col==="quotations" && !net.online
@@ -5773,7 +5951,6 @@ function wireView(){
   });
   v.querySelectorAll("[data-newrec]").forEach(el=> el.onclick = ()=> openForm(el.dataset.newrec));
   v.querySelectorAll("[data-import]").forEach(el=> el.onclick = ()=> openImport(el.dataset.import));
-  v.querySelectorAll("[data-calladd]").forEach(el=> el.onclick = ()=> openCallListBulk());
   v.querySelectorAll("[data-tab]").forEach(el=> el.onclick = ()=>{
     state.filters.tasks.tab = el.dataset.tab; render();
   });
@@ -9784,53 +9961,6 @@ function importableFields(col){
   return [...inList, ...others];
 }
 
-/* Prospecting call list: type or paste several companies at once, one per
-   line. A line may also carry "Company, Contact person, Phone" (comma or
-   tab separated, as copied from Excel). */
-function openCallListBulk(){
-  modal(`
-    <div class="modal-h">
-      <div><div class="eyebrow">Prospecting call list</div><h3>Add several companies</h3></div>
-      <button class="x" data-close aria-label="Close">×</button></div>
-    <div class="modal-b">
-      <p style="font-size:12.5px;color:var(--muted);margin-top:0">
-        One company per line. Optionally add the contact person and phone after it,
-        separated by a comma — e.g. <span class="mono">ABC Corp, Ms. Cruz, 0917 123 4567</span>.
-        You can paste straight from Excel.</p>
-      <textarea id="cl-lines" rows="10" style="width:100%" placeholder="Company A&#10;Company B, Mr. Santos, 0918 000 0000&#10;Company C"></textarea>
-      <div class="hint" id="cl-count" style="margin-top:6px"></div>
-      <div class="err hidden" id="cl-err"></div>
-    </div>
-    <div class="modal-f"><div class="spacer"></div>
-      <button class="btn" data-close>Cancel</button>
-      <button class="btn pri" id="cl-save">Add to list</button></div>`, true);
-  const parse = ()=> $("#cl-lines").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{
-    const p = l.split(/\t|,/).map(x=>x.trim());
-    return { company:p[0], contactPerson:p[1]||null, phone:p[2]||null };
-  }).filter(r=>r.company);
-  $("#cl-lines").oninput = ()=>{ const n = parse().length; $("#cl-count").textContent = n ? `${n} compan${n===1?"y":"ies"} ready to add` : ""; };
-  $("#cl-save").onclick = async ()=>{
-    const list = parse();
-    if (!list.length){ const b=$("#cl-err"); b.textContent="Type at least one company."; b.classList.remove("hidden"); return; }
-    $("#cl-save").disabled = true;
-    const owner = myUid(), dept = state.profile.department;
-    try{
-      await Promise.all(list.map(r=>{
-        const ref = doc(collection(db,"calllist"));
-        return tracked(setDoc(ref, {
-          ...r, status:"To call", nextCallDate:null, notes:null,
-          ownerId:owner, department:dept, createdBy:owner,
-          createdAt:serverTimestamp(), updatedAt:serverTimestamp(), updatedBy:owner
-        }));
-      }));
-      closeModal(true);
-      toast(`${list.length} added to the call list` + syncNote());
-    }catch(e){
-      $("#cl-save").disabled = false;
-      const b=$("#cl-err"); b.textContent = e.message || "Couldn't add them."; b.classList.remove("hidden");
-    }
-  };
-}
 function openImport(col){
   const S = SCHEMAS[col];
   const imp = { col, rows:[], headers:[], map:[], hasHeader:true, ownerId:myUid() };
