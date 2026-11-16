@@ -893,7 +893,9 @@ select option, select optgroup{ background:var(--opt-bg); color:var(--opt-text);
       <div class="kicker">Access pending</div>
     </div>
     <h2>No role assigned</h2>
-    <p class="lead">Your sign-in works, but no one has given you a role yet. Ask an administrator to add you in <strong style="color:#CFDDE9">Team</strong>, then sign in again.</p>
+    <p class="lead" id="np-lead">Your sign-in works, but no one has given you a role yet. Ask an administrator to add you in <strong style="color:#CFDDE9">Team</strong>, then sign in again.</p>
+    <p class="lead hidden" id="np-err" style="color:#F2B8A8;word-break:break-word"></p>
+    <button class="btn hidden" id="np-retry" onclick="location.reload()" style="margin-bottom:8px">Try again</button>
     <button class="btn" onclick="window.__signOut()">Sign out</button>
   </div>
 </div>
@@ -2185,11 +2187,17 @@ onAuthStateChanged(auth, async (u)=>{
     return;
   }
   state.user = u;
-  let snap;
+  let snap, loadErr = null;
   try { snap = await getDoc(doc(db,"users",u.uid)); }
-  catch(e){ console.error(e); }
+  catch(e){ console.error(e); loadErr = e; }
   if(!snap || !snap.exists()){
     $("#gate").classList.add("hidden"); $("#app").classList.add("hidden");
+    // A failed lookup is NOT the same as "no role": show the real reason.
+    const failed = !!loadErr;
+    $("#np-lead").classList.toggle("hidden", failed);
+    $("#np-retry").classList.toggle("hidden", !failed);
+    const er = $("#np-err"); er.classList.toggle("hidden", !failed);
+    if (failed) er.textContent = "Couldn't load your profile — " + (loadErr.code || "error") + ": " + (loadErr.message || "");
     $("#noprofile").classList.remove("hidden");
     return;
   }
