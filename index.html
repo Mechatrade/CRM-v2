@@ -1406,6 +1406,18 @@ const SCHEMAS = {
       { k:"notes",         l:"Notes",         type:"textarea", full:true }
     ]
   },
+  calllist: {
+    label:"Prospect", plural:"Prospecting call list", icon:"☏", titleField:"company",
+    fields:[
+      { k:"company",       l:"Company",         type:"text",   req:true, table:true },
+      { k:"contactPerson", l:"Contact person",  type:"text",   table:true },
+      { k:"phone",         l:"Phone",           type:"text",   table:true },
+      { k:"status",        l:"Status",          type:"select", opts:["To call","Called","Call back","No answer","Not interested","Became a lead"], def:"To call", table:true },
+      { k:"nextCallDate",  l:"Call again on",   type:"date",   table:true },
+      { k:"ownerId",       l:"Owner",           type:"ref",    refTo:"users", table:true, assignOnly:true },
+      { k:"notes",         l:"Notes",           type:"textarea", full:true }
+    ]
+  },
   salesorders: {
     label:"Sales order", plural:"Sales orders", icon:"⬒", titleField:"orderNo",
     fields:[
@@ -1932,7 +1944,10 @@ function toDate(v){ if(!v) return null; const d = v?.toDate ? v.toDate() : new D
 const DAY = 86400000;
 function daysSince(v){ const d=toDate(v); return d ? Math.floor((Date.now()-d.getTime())/DAY) : null; }
 function daysUntil(v){ const d=toDate(v); return d ? Math.ceil((d.getTime()-Date.now())/DAY) : null; }
-function todayISO(){ return new Date().toISOString().slice(0,10); }
+function todayISO(){          // the user's own calendar date (not UTC — Manila is UTC+8)
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
 function monthStart(){ const d=new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); }
 function initials(name){ return (name||"?").split(" ").filter(Boolean).slice(0,2).map(w=>w[0]).join("").toUpperCase(); }
 function userName(uid){ return state.users.get(uid)?.displayName || (uid===myUid() ? "You" : "—"); }
@@ -2469,7 +2484,8 @@ const NAV = [
      are simply no longer separate menu entries. Give any of them `hidden`
      to show them in the menu again. */
   ...salesNavGroups("Business Development"),
-  { group:"Business Development", depts:["Business Development"], items:[
+  { group:"Business Development", depts:["Business Development"], alsoAdmin:true, items:[
+    { id:"calllist",   label:"Call List",       icon:"☏", depts:["Business Development"], alsoAdmin:true },
     { id:"prospects",  label:"Prospects",       icon:"◌", depts:["Business Development"], hidden:true },
     { id:"partners",   label:"Partnerships",    icon:"⬡", depts:["Business Development"], hidden:true },
     { id:"projects",   label:"Projects & RFQs", icon:"⌗", depts:["Business Development"], hidden:true },
@@ -2520,6 +2536,7 @@ const NAV = [
 function inDept(x){
   if (!x.depts) return true;
   if (isAdmin() && state.workspace === "Admin") return true;   // "All departments"
+  if (isAdmin() && x.alsoAdmin) return true;                    // shown to admins in every workspace
   return x.depts.includes(actingDept());
 }
 function renderNav(){
@@ -2603,7 +2620,7 @@ const NEW_FOR = { leads:"leads", pipeline:"deals", accounts:"accounts", contacts
                   events:"campaigns", registry:"accounts",
                   inquiries:"inquiries", followups:"followups",
                   salesorders:"salesorders", products:"products", suppliers:"suppliers",
-                  costing:"costing" };
+                  costing:"costing", calllist:"calllist" };
 $("#new-btn").onclick = ()=>{
   if (state.route === "team")     return openUserForm();
   if (state.route === "settings") return setRoute("team");
@@ -2623,7 +2640,7 @@ const TITLES = { dashboard:"Dashboard", leads:"Leads", pipeline:"Opportunities",
                  content:"Content plan", assets:"Marketing assets", events:"Events",
                  registry:"Customer registry",
                  inquiries:"Customer / Lead Inquiry",
-                 costing:"Product Costing", followups:"Follow-ups",
+                 costing:"Product Costing", followups:"Follow-ups", calllist:"Prospecting call list",
                  salesorders:"Sales Orders", products:"Products", suppliers:"Suppliers" };
 function render(){
   if(!state.profile) return;
@@ -2634,7 +2651,7 @@ function render(){
   // admin task, not "business data").
   $("#new-btn").classList.toggle("hidden",
     ["reports","settings","forecast","dashboard","activity"].includes(state.route)
-    || (isAdmin() && state.route !== "team"));
+    || (isAdmin() && state.route !== "team" && state.route !== "calllist"));
   $("#new-btn").textContent = state.route==="team" ? "Add person" : "New " + (SCHEMAS[NEW_FOR[state.route]]?.label.toLowerCase() || "record");
   const v = $("#view");
   switch(state.route){
@@ -3439,6 +3456,7 @@ function viewList(col){
       ${f.showConverted ? "Hide converted" : `Show converted (${convertedLeads.length})`}
     </button>`:""}
     <div style="flex:1"></div>
+    ${col==="calllist" ? `<button class="btn pri" data-calladd title="Type or paste several companies at once">+ Add several</button>` : ""}
     ${["inquiries","costing","quotations","followups"].includes(col) ? "" : `<button class="btn" data-import="${col}" title="Paste from Excel or upload a CSV">Import</button>`}
     ${col==="quotations" ? seriesBadge() : ""}
     ${col==="quotations" && !net.online
@@ -5755,6 +5773,7 @@ function wireView(){
   });
   v.querySelectorAll("[data-newrec]").forEach(el=> el.onclick = ()=> openForm(el.dataset.newrec));
   v.querySelectorAll("[data-import]").forEach(el=> el.onclick = ()=> openImport(el.dataset.import));
+  v.querySelectorAll("[data-calladd]").forEach(el=> el.onclick = ()=> openCallListBulk());
   v.querySelectorAll("[data-tab]").forEach(el=> el.onclick = ()=>{
     state.filters.tasks.tab = el.dataset.tab; render();
   });
@@ -5956,6 +5975,18 @@ function quoteVersionSnapshot(q){
    "costing" branch: gathers every sibling sheet sharing the same control
    number and only proceeds once every one of them is Approved, so the
    quotation always reflects the full picture, not a partial one. */
+/* Editing a quotation re-issues it: the Date issued moves to today and the
+   Valid-until date moves with it, keeping the same validity period the
+   quotation already had — so the document matches the day the revised
+   proposal is actually sent to the customer. */
+function reissueDates(q){
+  const t = s => s ? Date.UTC(...s.split("-").map((n,i)=> i===1 ? Number(n)-1 : Number(n))) : NaN;
+  const span = Math.round((t(q.validUntil) - t(q.issueDate)) / 86400000);
+  const days = Number.isFinite(span) && span >= 0 ? span : 30;
+  const [y,m,d] = todayISO().split("-").map(Number);
+  const valid = new Date(Date.UTC(y, m-1, d + days)).toISOString().slice(0,10);
+  return { issueDate: todayISO(), validUntil: valid };
+}
 async function syncQuotationFromCosting(costingId){
   const c = state.data.costing.get(costingId);
   if (!c || !c.controlNo) return;
@@ -5993,6 +6024,7 @@ async function syncQuotationFromCosting(costingId){
       revision: Number(q.revision||0) + 1,
       costingRevision: Number(q.costingRevision||0) + 1,
       costingOutOfSync: false,
+      ...reissueDates(q),
       approvalLog: Array.isArray(q.approvalLog) ? [...q.approvalLog, entry] : [entry],
       updatedAt: serverTimestamp()
     });
@@ -6029,6 +6061,7 @@ async function forceSyncQuotationFromCosting(quotationId){
       revision: Number(q.revision||0) + 1,
       costingRevision: Number(q.costingRevision||0) + 1,
       costingOutOfSync: false,
+      ...reissueDates(q),
       approvalLog: Array.isArray(q.approvalLog) ? [...q.approvalLog, entry] : [entry],
       updatedAt: serverTimestamp()
     });
@@ -8737,6 +8770,13 @@ function openQuoteForm(id, preset){
       updatedAt: serverTimestamp(), updatedBy: myUid()
     };
     if (id){
+      // Saving an edit re-issues the quotation: today's date, with the same
+      // validity period — unless the dates were changed by hand in the form.
+      const issueTouched = $("#q-issue").value !== (q.issueDate || "");
+      const validTouched = $("#q-valid").value !== (q.validUntil || "");
+      const re = reissueDates({ issueDate: q.issueDate, validUntil: q.validUntil });
+      if (!issueTouched) payload.issueDate = re.issueDate;
+      if (!validTouched && !issueTouched) payload.validUntil = re.validUntil;
       // Keep what this quotation looked like before this edit — Preview
       // can still show any past revision, not just the current one.
       const snapshot = {
@@ -9744,6 +9784,53 @@ function importableFields(col){
   return [...inList, ...others];
 }
 
+/* Prospecting call list: type or paste several companies at once, one per
+   line. A line may also carry "Company, Contact person, Phone" (comma or
+   tab separated, as copied from Excel). */
+function openCallListBulk(){
+  modal(`
+    <div class="modal-h">
+      <div><div class="eyebrow">Prospecting call list</div><h3>Add several companies</h3></div>
+      <button class="x" data-close aria-label="Close">×</button></div>
+    <div class="modal-b">
+      <p style="font-size:12.5px;color:var(--muted);margin-top:0">
+        One company per line. Optionally add the contact person and phone after it,
+        separated by a comma — e.g. <span class="mono">ABC Corp, Ms. Cruz, 0917 123 4567</span>.
+        You can paste straight from Excel.</p>
+      <textarea id="cl-lines" rows="10" style="width:100%" placeholder="Company A&#10;Company B, Mr. Santos, 0918 000 0000&#10;Company C"></textarea>
+      <div class="hint" id="cl-count" style="margin-top:6px"></div>
+      <div class="err hidden" id="cl-err"></div>
+    </div>
+    <div class="modal-f"><div class="spacer"></div>
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn pri" id="cl-save">Add to list</button></div>`, true);
+  const parse = ()=> $("#cl-lines").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{
+    const p = l.split(/\t|,/).map(x=>x.trim());
+    return { company:p[0], contactPerson:p[1]||null, phone:p[2]||null };
+  }).filter(r=>r.company);
+  $("#cl-lines").oninput = ()=>{ const n = parse().length; $("#cl-count").textContent = n ? `${n} compan${n===1?"y":"ies"} ready to add` : ""; };
+  $("#cl-save").onclick = async ()=>{
+    const list = parse();
+    if (!list.length){ const b=$("#cl-err"); b.textContent="Type at least one company."; b.classList.remove("hidden"); return; }
+    $("#cl-save").disabled = true;
+    const owner = myUid(), dept = state.profile.department;
+    try{
+      await Promise.all(list.map(r=>{
+        const ref = doc(collection(db,"calllist"));
+        return tracked(setDoc(ref, {
+          ...r, status:"To call", nextCallDate:null, notes:null,
+          ownerId:owner, department:dept, createdBy:owner,
+          createdAt:serverTimestamp(), updatedAt:serverTimestamp(), updatedBy:owner
+        }));
+      }));
+      closeModal(true);
+      toast(`${list.length} added to the call list` + syncNote());
+    }catch(e){
+      $("#cl-save").disabled = false;
+      const b=$("#cl-err"); b.textContent = e.message || "Couldn't add them."; b.classList.remove("hidden");
+    }
+  };
+}
 function openImport(col){
   const S = SCHEMAS[col];
   const imp = { col, rows:[], headers:[], map:[], hasHeader:true, ownerId:myUid() };
