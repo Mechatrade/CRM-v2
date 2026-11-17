@@ -1525,6 +1525,23 @@ function seen(c){
 /* The Sales Person a quotation is for = whoever holds that customer's
    account: the Sales Person set on the customer, else its account manager,
    else whatever was stamped on the quotation when it was created. */
+/* Settings → Sales Persons: one per line, "Name | ID" (the ID is the person's
+   CRM login name). Customers are tagged with the name only; the ID is looked
+   up from this list wherever it needs to be shown. */
+const spName = line => String(line||"").split("|")[0].trim();
+const spId   = line => String(line||"").split("|").slice(1).join("|").trim();
+function salesPersonNames(){
+  return [...new Set((state.settings.salesPersons||[]).map(spName).filter(Boolean))];
+}
+function salesPersonId(name){
+  const n = String(name||"").trim().toLowerCase();
+  const hit = (state.settings.salesPersons||[]).find(l=>spName(l).toLowerCase()===n && spId(l));
+  return hit ? spId(hit) : "";
+}
+function salesPersonLabel(name){          // "Mark Cuevas (ID: mcuevas)"
+  const id = salesPersonId(name);
+  return name ? (id ? `${name} (ID: ${id})` : name) : "";
+}
 function quoteSalesPerson(q, acct){
   return acct?.salesPerson
       || (acct?.accountManagerId ? userName(acct.accountManagerId) : "")
@@ -5586,12 +5603,40 @@ function viewTeam(){
 /* ------------------------------------------------------------------ */
 /* 15. SETTINGS (admin)                                                */
 /* ------------------------------------------------------------------ */
+/* Sales Persons editor: Name and ID in separate fields. Stored as "Name | ID"
+   lines so everything that reads the list keeps working. */
+function spRowHTML(name, id){
+  return `<div class="sp-row" style="display:flex;gap:8px;margin-bottom:6px;align-items:center">
+    <input class="sp-name" type="text" value="${esc(name||"")}" placeholder="Name" style="flex:2;min-width:0">
+    <input class="sp-id" type="text" list="sp-ids" value="${esc(id||"")}" placeholder="ID number (CRM login name)" style="flex:1.4;min-width:0">
+    <button type="button" class="btn sm" title="Remove" onclick="this.closest('.sp-row').remove()">✕</button>
+  </div>`;
+}
+function spEditorHTML(lines){
+  const logins = Array.from(state.users?.values?.() || []).map(u=>u.loginName).filter(Boolean);
+  return `<div class="field full" style="margin-bottom:16px" id="s-salesPersons">
+    <label>Sales Persons</label>
+    <div style="display:flex;gap:8px;font-size:11px;color:var(--muted);margin-bottom:4px">
+      <span style="flex:2">NAME</span><span style="flex:1.4">ID NUMBER (CRM LOGIN NAME)</span><span style="width:34px"></span></div>
+    <div id="sp-rows">${lines.map(l=>spRowHTML(spName(l), spId(l))).join("")}</div>
+    <datalist id="sp-ids">${logins.map(l=>`<option value="${esc(l)}"></option>`).join("")}</datalist>
+    <button type="button" class="btn sm" onclick="document.getElementById('sp-rows').insertAdjacentHTML('beforeend', window.__spRow()); document.querySelector('#sp-rows .sp-row:last-child .sp-name').focus()">+ Add Sales Person</button>
+    <span class="hint" style="display:block;margin-top:6px">Tags which Sales Person's customer this is. The ID prints on the quotation next to the name. Pick the ID from the list of CRM login names, or type it.</span>
+  </div>`;
+}
+window.__spRow = ()=> spRowHTML("","");
+function spEditorValues(){
+  return Array.from(document.querySelectorAll("#sp-rows .sp-row")).map(r=>{
+    const n = r.querySelector(".sp-name").value.trim(), i = r.querySelector(".sp-id").value.trim();
+    return n ? (i ? `${n} | ${i}` : n) : "";
+  }).filter(Boolean);
+}
 const LISTS = [
   { k:"sources",     l:"Lead sources",  h:"Where a lead came from." },
   { k:"industries",  l:"Industries",    h:"Used to segment accounts." },
   { k:"lostReasons", l:"Lost reasons",  h:"Required when a deal is marked Lost." },
   { k:"channels",    l:"Campaign channels", h:"Marketing channel options." },
-  { k:"salesPersons",l:"Sales Persons", h:"Names only, not CRM logins — tags which Sales Person's customer this is." }
+  { k:"salesPersons",l:"Sales Persons", h:"One per line as  Name | ID  — e.g. Mark Cuevas | mcuevas. The ID is the person's CRM login name; it prints on the quotation next to the name. Tags which Sales Person's customer this is." }
 ];
 // The supplier compliance documents — shared by Settings (destination
 // folder per type), the Supplier form, and the completeness check run at
@@ -5706,7 +5751,7 @@ function viewSettings(){
             <input id="s-fx-${c}" type="number" min="0" step="any" value="${esc(s.fxRates?.[c]??"")}"></div>`).join("")}
       </div>
 
-      ${LISTS.map(L=>`<div class="field full" style="margin-bottom:16px">
+      ${LISTS.map(L=> L.k==="salesPersons" ? spEditorHTML(s[L.k]||[]) : `<div class="field full" style="margin-bottom:16px">
         <label for="s-${L.k}">${esc(L.l)}</label>
         <textarea id="s-${L.k}" style="min-height:84px">${esc((s[L.k]||[]).join("\n"))}</textarea>
         <span class="hint">${esc(L.h)} One per line.</span>
@@ -6304,7 +6349,8 @@ async function saveSettings(){
       ...Object.fromEntries(SUPPLIER_DOCS.map(dd=>[dd.k, $("#s-folder-"+dd.k).value.trim()]).filter(([,v])=>v)),
       ...($("#s-folder-customerPO").value.trim() ? { customerPO: $("#s-folder-customerPO").value.trim() } : {})
     },
-    ...Object.fromEntries(LISTS.map(L=>[L.k, $("#s-"+L.k).value.split("\n").map(s=>s.trim()).filter(Boolean)]))
+    ...Object.fromEntries(LISTS.map(L=>[L.k, L.k==="salesPersons" ? spEditorValues()
+        : $("#s-"+L.k).value.split("\n").map(s=>s.trim()).filter(Boolean)]))
   };
   try{ await setDoc(doc(db,"settings","config"), payload, { merge:true }); toast("Settings saved"); }
   catch(e){ toast(e.message,true); }
@@ -6407,7 +6453,8 @@ function fieldHTML(col,f,d,isNew){
       : "") + box;
   }
   else if (f.type === "select"){
-    const opts = f.optsFrom ? (state.settings[f.optsFrom]||[]) : f.opts;
+    const opts = f.optsFrom === "salesPersons" ? salesPersonNames()
+               : f.optsFrom ? (state.settings[f.optsFrom]||[]) : f.opts;
     // A stored value from before the option list changed (e.g. a lead
     // already "Converted", or an older "Unqualified") stays visible and
     // selected even though it's no longer offered as a new pick — same
@@ -7705,7 +7752,7 @@ function openInquiryForm(id, preset){
     const el = $("#iq-salesperson");
     if (type === "Account" && relId){
       const acct = state.data.accounts.get(relId);
-      el.textContent = acct?.salesPerson || "Not set on this customer — add one from Customers";
+      el.textContent = salesPersonLabel(acct?.salesPerson) || "Not set on this customer — add one from Customers";
     } else {
       el.textContent = type === "Lead" ? "Set once this lead becomes a Customer" : "—";
     }
@@ -9617,6 +9664,7 @@ function quoteDocHTML(q){
       <div>
         <div class="cap">Prepared by</div>
         <div class="who">${esc(quoteSalesPerson(q, acct) || userName(q.createdBy || q.ownerId) || "—")}</div>
+        ${salesPersonId(quoteSalesPerson(q, acct)) ? `<div>ID: ${esc(salesPersonId(quoteSalesPerson(q, acct)))}</div>` : ""}
         <div>${esc(st.companyName || "")}</div>
         ${st.companyEmail?`<div>${esc(st.companyEmail)}</div>`:""}
       </div>
@@ -9671,7 +9719,7 @@ function quoteDocHTML(q){
       <div><div class="cap">Prepared by</div>
         <div class="line">${esc(userName(q.createdBy || q.ownerId) || "")} — Signature over printed name</div></div>
       <div><div class="cap">Sales Person</div>
-        <div class="line">${esc(quoteSalesPerson(q, acct))}${quoteSalesPerson(q, acct) ? " — " : ""}Signature over printed name / Date</div></div>
+        <div class="line">${esc(salesPersonLabel(quoteSalesPerson(q, acct)))}${quoteSalesPerson(q, acct) ? " — " : ""}Signature over printed name / Date</div></div>
     </div>
 
     <div class="foot">${esc(st.companyName || "")}${st.companyWeb?" · "+esc(st.companyWeb):""}
@@ -10128,7 +10176,8 @@ function openImport(col){
         }
         if (f.type === "email" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) issues.push("Email looks wrong");
         if (f.type === "select"){
-          const opts = f.optsFrom ? (state.settings[f.optsFrom]||[]) : (f.opts||[]);
+          const opts = f.optsFrom === "salesPersons" ? salesPersonNames()
+                     : f.optsFrom ? (state.settings[f.optsFrom]||[]) : (f.opts||[]);
           const hit = opts.find(o=> norm(o) === norm(v));
           if (hit) rec[f.k] = hit;                    // fix casing silently
           else issues.push(`${f.l} "${v}" isn't one of the allowed values`);
