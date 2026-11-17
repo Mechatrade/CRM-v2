@@ -2665,7 +2665,7 @@ function render(){
   // disappears for admins everywhere except Team (adding people is an
   // admin task, not "business data").
   $("#new-btn").classList.toggle("hidden",
-    ["reports","settings","forecast","dashboard","activity"].includes(state.route)
+    ["reports","settings","forecast","dashboard","activity","calllist"].includes(state.route)
     || (isAdmin() && state.route !== "team" && state.route !== "calllist"));
   $("#new-btn").textContent = state.route==="team" ? "Add person" : "New " + (SCHEMAS[NEW_FOR[state.route]]?.label.toLowerCase() || "record");
   const v = $("#view");
@@ -3391,15 +3391,15 @@ function callRowHTML(d, isNew){
   const k = f=>`data-f="${f}"`;
   return `<tr data-id="${isNew?"":d.id}" ${isNew?'id="cs-newrow" style="background:var(--panel-2)"':""}>
     <td class="mono" style="font-size:12px;white-space:nowrap">${stamp}</td>
+    <td style="white-space:nowrap">${isNew
+      ? `<button class="btn pri sm" id="cs-add">Add</button>`
+      : `<button class="btn sm" data-del title="Remove this row">✕</button>`}</td>
     <td><input ${k("company")} ${isNew?'id="cs-company"':""} value="${esc(d.company||"")}" placeholder="${isNew?"Type a company name…":""}" style="width:100%"></td>
     <td><select ${k("callerId")}>${callerOpts}</select></td>
     <td><input type="date" ${k("targetDate")} value="${esc(d.targetDate||"")}"></td>
     <td><select ${k("status")}>${CALL_STATUSES.map(o=>`<option${o===d.status?" selected":""}>${o}</option>`).join("")}</select></td>
     <td><input type="date" ${k("nextCallDate")} value="${esc(d.nextCallDate||"")}"></td>
     <td><textarea ${k("notes")} rows="1" placeholder="Ctrl+Enter for the next note" style="width:100%;min-width:220px;resize:vertical;min-height:34px">${esc(d.notes||"")}</textarea></td>
-    <td style="white-space:nowrap">${isNew
-      ? `<button class="btn pri sm" id="cs-add">Add</button>`
-      : `<button class="btn sm" data-del title="Remove this row">✕</button>`}</td>
   </tr>`;
 }
 function viewCallSheet(){
@@ -3418,8 +3418,8 @@ function viewCallSheet(){
     </div>
     <div style="overflow:auto">
     <table class="tbl" style="min-width:1050px">
-      <thead><tr><th>Timestamp</th><th style="min-width:220px">Company name</th><th>Caller</th>
-        <th>Target call date</th><th>Status</th><th>Call again on</th><th style="min-width:220px">Notes</th><th></th></tr></thead>
+      <thead><tr><th>Timestamp</th><th></th><th style="min-width:220px">Company name</th><th>Caller</th>
+        <th>Target call date</th><th>Status</th><th>Call again on</th><th style="min-width:220px">Notes</th></tr></thead>
       <tbody>
         ${callRowHTML(callNew, true)}
         ${list.map(d=>callRowHTML(d,false)).join("")}
