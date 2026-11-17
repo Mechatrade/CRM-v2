@@ -3232,7 +3232,7 @@ function myQuotationSnapshot(scope){
   const myCosting   = rows("costing").filter(d=> team ? recordForUsers(d, team, spOfRecord("costing", d)) : recordIsMine("costing", d, uid));
   const ownQuotes   = rows("quotations").filter(d=>d.ownerId===uid);
   const myQuotes    = rows("quotations").filter(d=> team ? recordForUsers(d, team, spOfRecord("quotations", d)) : quoteIsMine(d, uid));
-  const per = state.filters.dashboardPeriod || "month";
+  const per = state.filters.dashboardPeriod || "all";
   const ms = periodStart(per);
   const inPer = (col, d)=>{ const x = periodDateOf(col, d); return !!x && x >= ms; };
 
