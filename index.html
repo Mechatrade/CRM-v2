@@ -3252,12 +3252,15 @@ function myQuotationSnapshot(scope){
     <div class="card">
       <div class="card-h"><h3>Needs follow-up</h3><div class="spacer"></div>
         <span class="eyebrow">${needsFollowUp.length} pending</span></div>
-      ${needsFollowUp.length ? `<div class="tbl-wrap"><table><tbody>
-        ${needsFollowUp.slice(0,8).map(({q,days})=>{
+      ${needsFollowUp.length ? `<div class="tbl-wrap" style="max-height:236px;overflow-y:auto"><table><tbody>
+        ${needsFollowUp.map(({q,days})=>{
           const tag = quoteFollowUp(days);
           return `<tr>
             <td><span class="lnk" data-open="quotations:${q.id}">${esc(q.quoteNo||q.title||"Quotation")}</span>
               <div style="font-size:11.5px;color:var(--muted)">${esc(customerLabel(q))}</div></td>
+            <td>${(()=>{ const sp = quoteSalesPerson(q, state.data.accounts.get(q.accountId));
+                return sp ? `<div style="font-size:12.5px">${esc(sp)}</div>${salesPersonId(sp) ? `<div class="mono" style="font-size:10.5px;color:var(--muted)">${esc(salesPersonId(sp))}</div>` : ""}`
+                          : `<span style="color:var(--faint)">—</span>`; })()}</td>
             <td class="num">${money(q.total)}</td>
             <td class="num"><span class="pill" title="${esc(tag.hint)}">${tag.emoji} ${esc(tag.label)}</span>
               <div style="font-size:10.5px;color:var(--muted);margin-top:2px">${days}d since sent</div></td>
