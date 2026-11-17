@@ -1551,14 +1551,30 @@ function quoteSalesPerson(q, acct){
    the Sales Person — matched by the Sales Person's ID (their CRM login name),
    or by name when no ID was set. This is how a quotation a Sales Operations
    Specialist makes shows up on the targeted user's dashboard. */
-function quoteIsMine(q, uid){
-  if (q.ownerId === uid) return true;
-  const u = state.users.get(uid); if (!u) return false;
-  const sp = quoteSalesPerson(q, state.data.accounts.get(q.accountId));
-  if (!sp) return false;
+function spMatchesUser(sp, u){
+  if (!sp || !u) return false;
   const id = salesPersonId(sp).toLowerCase();
   if (id) return !!u.loginName && id === String(u.loginName).toLowerCase();
   return sp.trim().toLowerCase() === String(u.displayName||"").trim().toLowerCase();
+}
+function spOfRecord(col, d){
+  if (col === "quotations") return quoteSalesPerson(d, state.data.accounts.get(d.accountId));
+  const aid = d.accountId || (d.relatedType==="Account" ? d.relatedId : null);
+  return state.data.accounts.get(aid)?.salesPerson || d.salesPerson || "";
+}
+function deptUserSet(dept){
+  return new Set(Array.from(state.users.values()).filter(u=>u.department===dept && u.active!==false).map(u=>u.id));
+}
+/* A record belongs to a group of people if one of them owns it, or it is raised
+   for one of them as the Sales Person. */
+function recordForUsers(d, uids, sp){
+  if (uids.has(d.ownerId)) return true;
+  if (!sp) return false;
+  for (const id of uids) if (spMatchesUser(sp, state.users.get(id))) return true;
+  return false;
+}
+function quoteIsMine(q, uid){
+  return q.ownerId === uid || spMatchesUser(spOfRecord("quotations", q), state.users.get(uid));
 }
 function myLeads(){
   const all = rows("leads");
@@ -3113,7 +3129,7 @@ function viewDashboard(){
   // the signed-in person specifically, so an admin browsing a department
   // they don't personally work in never has anything to show here — skip
   // it for them rather than display a permanently-empty section.
-  const mine = (!isAdmin() && ["Sales","Business Development"].includes(d)) ? myQuotationSnapshot() : "";
+  const mine = (!isAdmin() && ["Sales","Business Development"].includes(d)) ? myQuotationSnapshot(scope) : "";
   return toggle + mine + fn(scope);
 }
 /* How long a sent quotation has been waiting, and what to do about it —
@@ -3167,12 +3183,17 @@ function salesPersonQuotesPanel(quotes, title, sub){
    rep's — so it sits safely on top of any department dashboard below it.
    Card counts, the pipeline funnel, and the follow-up list all read from
    the same three collections so the numbers never disagree with each other. */
-function myQuotationSnapshot(){
+function myQuotationSnapshot(scope){
   const uid = myUid();
-  const myInquiries = rows("inquiries").filter(d=>d.ownerId===uid);
-  const myCosting   = rows("costing").filter(d=>d.ownerId===uid);
+  // Manager/Supervisor on the "Department" tab: the same cards, but counted
+  // across everyone in their department (including quotations raised for
+  // their people as Sales Person), not just their own records.
+  const teamDept = scope === "dept" ? state.profile.department : null;
+  const team = teamDept ? deptUserSet(teamDept) : null;
+  const myInquiries = rows("inquiries").filter(d=> team ? recordForUsers(d, team, spOfRecord("inquiries", d)) : d.ownerId===uid);
+  const myCosting   = rows("costing").filter(d=> team ? recordForUsers(d, team, spOfRecord("costing", d)) : d.ownerId===uid);
   const ownQuotes   = rows("quotations").filter(d=>d.ownerId===uid);
-  const myQuotes    = rows("quotations").filter(d=>quoteIsMine(d, uid));
+  const myQuotes    = rows("quotations").filter(d=> team ? recordForUsers(d, team, spOfRecord("quotations", d)) : quoteIsMine(d, uid));
   const ms = monthStart();
 
   const newInquiries = myInquiries.filter(d=>d.status==="Open");
@@ -3186,7 +3207,7 @@ function myQuotationSnapshot(){
   const lostValue = lostMonth.reduce((s,q)=>s+Number(q.total||0),0);
 
   const kpi = (label, val, foot, col, status) => `
-    <div class="kpi" data-kpi='${esc(JSON.stringify({col, status, owner:uid}))}' style="cursor:pointer">
+    <div class="kpi" data-kpi='${esc(JSON.stringify(teamDept ? {col, status, team:teamDept} : {col, status, owner:uid}))}' style="cursor:pointer">
       <div class="lbl">${esc(label)}</div>
       <div class="val mono">${val}</div>
       <div class="foot">${esc(foot)}</div>
@@ -3204,7 +3225,7 @@ function myQuotationSnapshot(){
     .sort((a,b)=>b.days-a.days);
 
   return `
-  <div class="eyebrow" style="margin-bottom:8px">Your Sales &amp; Quotation Management</div>
+  <div class="eyebrow" style="margin-bottom:8px">${teamDept ? esc(teamDept) + " department — " : "Your "}Sales &amp; Quotation Management</div>
   <div class="kpis">
     ${kpi("New Inquiries", newInquiries.length, "awaiting a first look", "inquiries", "Open")}
     ${kpi("For Quotation", forQuotation.length, "costing approved, not yet quoted", "costing", "Approved")}
@@ -3216,7 +3237,7 @@ function myQuotationSnapshot(){
 
   <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:14px">
     <div class="card">
-      <div class="card-h"><h3>Your pipeline</h3><div class="spacer"></div>
+      <div class="card-h"><h3>${teamDept ? "Department pipeline" : "Your pipeline"}</h3><div class="spacer"></div>
         <button class="btn sm" data-go="inquiries">All inquiries</button></div>
       <div class="bars">
         ${funnelStages.map(s=>{
@@ -3620,6 +3641,7 @@ function viewList(col){
   if (col==="deals" && f.oppType) list = list.filter(d=>(d.opportunityType||"Direct")===f.oppType);
   if (col==="deals" && f.sector)  list = list.filter(d=>(d.sector||"Private")===f.sector);
   if (col==="accounts" && f.acctType) list = list.filter(d=>d.type===f.acctType);
+  if (f.team){ const ts = deptUserSet(f.team); list = list.filter(d=>recordForUsers(d, ts, spOfRecord(col, d))); }
   if (f.dept) list = list.filter(d=>state.users.get(d.ownerId)?.department === f.dept);
   if (f.role) list = list.filter(d=>state.users.get(d.ownerId)?.role === f.role);
   if (col==="accounts" && f.mgr)
@@ -3668,8 +3690,13 @@ function viewList(col){
     </div>
   </div>` : "";
 
+  const teamBanner = f.team ? `
+  <div class="card" style="padding:10px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px">
+    <span>Showing the <strong>${esc(f.team)}</strong> department's records only (including ones raised for its people as Sales Person).</span>
+    <div class="spacer"></div><button class="btn sm" data-clear-team>Show all</button>
+  </div>` : "";
   const filterBar = `
-  ${lowGpBanner}
+  ${lowGpBanner}${teamBanner}
   <div class="toolbar">
     ${pageSearchPH ? `<span class="search" style="flex:none">
       <span class="mag">⌕</span>
@@ -5862,7 +5889,7 @@ function wireView(){
   // so the number on the card and what you land on always agree.
   v.querySelectorAll("[data-kpi]").forEach(el=> el.onclick = ()=>{
     const spec = JSON.parse(el.dataset.kpi);
-    state.filters[spec.col] = { ...(state.filters[spec.col]||{}), status: spec.status ?? undefined, owner: spec.owner ?? undefined };
+    state.filters[spec.col] = { ...(state.filters[spec.col]||{}), status: spec.status ?? undefined, owner: spec.owner ?? undefined, team: spec.team ?? undefined };
     setRoute(spec.col);
   });
   v.querySelectorAll("[data-convert]").forEach(el=> el.onclick = ()=> openConvert(el.dataset.convert));
@@ -5962,6 +5989,10 @@ function wireView(){
     // count as marking the task done.
     if (el.type === "checkbox") el.checked = false;
     openMarkDoneModal(id);
+  });
+  v.querySelectorAll("[data-clear-team]").forEach(el=> el.onclick = ()=>{
+    const f = state.filters[state.route]; if (f) f.team = undefined;
+    render();
   });
   v.querySelectorAll("[data-sort]").forEach(el=> el.onclick = ()=>{
     const col = state.route==="pipeline" ? "deals" : state.route;
