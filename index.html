@@ -1971,6 +1971,12 @@ function monthStart(){ const d=new Date(); return new Date(d.getFullYear(), d.ge
 function initials(name){ return (name||"?").split(" ").filter(Boolean).slice(0,2).map(w=>w[0]).join("").toUpperCase(); }
 function userName(uid){ return state.users.get(uid)?.displayName || (uid===myUid() ? "You" : "—"); }
 function stageProb(k){ return (STAGES.find(s=>s.key===k)||{}).prob ?? 0; }
+/* Sales Person dropdown entries read "ID - Name" (just the name when no ID is set);
+   the stored value is always the plain name. */
+function spOpt(name, sel){
+  const id = salesPersonId(name);
+  return `<option value="${esc(name)}"${name===sel?" selected":""}>${esc(id ? id+" - "+name : name)}</option>`;
+}
 function opt(v,sel){ return `<option value="${esc(v)}"${v===sel?" selected":""}>${esc(v)}</option>`; }
 function toast(msg,bad){
   const t=document.createElement("div");
@@ -6510,7 +6516,7 @@ function fieldHTML(col,f,d,isNew){
       </div>`;
       return `<div class="field">${lab}${selectHTML}</div>${noteHTML}`;
     } else {
-      input = `<select id="${id}" data-k="${f.k}"><option value="">—</option>${[...opts,...legacyOpts].map(o=>opt(o,v)).join("")}</select>`;
+      input = `<select id="${id}" data-k="${f.k}"><option value="">—</option>${[...opts,...legacyOpts].map(o=> f.optsFrom==="salesPersons" ? spOpt(o,v) : opt(o,v)).join("")}</select>`;
     }
   }
   else if (f.type === "ref"){
@@ -7719,7 +7725,8 @@ function openInquiryForm(id, preset){
           <select id="iq-relid" data-dynamic="1">${myDynamicOptions(d.relatedType||"Lead", d.relatedId)}</select></div>
         <div class="field"><label>Sales Person</label>
           <div id="iq-salesperson" class="hint" style="padding:8px 10px;background:var(--input-bg);border:1px solid var(--input-brd);border-radius:6px;min-height:20px">—</div>
-          <span class="hint">Follows the customer automatically — set it on the Customer record, not here.</span></div>
+          <select id="iq-sp" class="hidden"><option value="">— choose a Sales Person —</option>${salesPersonNames().map(n=>spOpt(n, d.salesPerson||"")).join("")}</select>
+          <span class="hint" id="iq-sp-hint">Follows the customer automatically — set it on the Customer record, not here.</span></div>
         <div class="field"><label for="iq-contact">Contact person</label>
           <select id="iq-contact"><option value="">—</option></select>
           <span class="hint">Auto-filtered to the selected customer's contacts.</span></div>
@@ -7786,12 +7793,23 @@ function openInquiryForm(id, preset){
   }
   function refreshSalesPersonPreview(){
     const type = $("#iq-reltype").value, relId = $("#iq-relid").value;
-    const el = $("#iq-salesperson");
-    if (type === "Account" && relId){
-      const acct = state.data.accounts.get(relId);
-      el.textContent = salesPersonLabel(acct?.salesPerson) || "Not set on this customer — add one from Customers";
+    const el = $("#iq-salesperson"), sel = $("#iq-sp"), hint = $("#iq-sp-hint");
+    // Admin and Sales Operations Specialists may pick the Sales Person
+    // themselves — but only where the customer doesn't already have one
+    // (a lead, or a customer with none set). A customer's own Sales Person
+    // always wins.
+    const canPick = isAdmin() || state.profile.role === "sales_operations_specialist";
+    const acct = (type === "Account" && relId) ? state.data.accounts.get(relId) : null;
+    const fromCustomer = !!acct?.salesPerson;
+    const pickable = canPick && !fromCustomer && (type === "Lead" || !!acct);
+    sel.classList.toggle("hidden", !pickable);
+    el.classList.toggle("hidden", pickable);
+    if (pickable){
+      hint.textContent = "Choose who this inquiry is for. Once the customer has a Sales Person of their own, that one is used instead.";
     } else {
-      el.textContent = type === "Lead" ? "Set once this lead becomes a Customer" : "—";
+      hint.textContent = "Follows the customer automatically — set it on the Customer record, not here.";
+      if (acct) el.textContent = salesPersonLabel(acct.salesPerson) || "Not set on this customer — add one from Customers";
+      else el.textContent = type === "Lead" ? "Set once this lead becomes a Customer" : "—";
     }
   }
   refreshSalesPersonPreview();
@@ -8075,6 +8093,10 @@ function openInquiryForm(id, preset){
       const acct = state.data.accounts.get(payload.relatedId);
       if (acct?.salesPerson) payload.salesPerson = acct.salesPerson;
     }
+    // Picked on the form (admin / Sales Operations Specialist) when the
+    // customer doesn't supply one.
+    if (!payload.salesPerson && !$("#iq-sp").classList.contains("hidden"))
+      payload.salesPerson = $("#iq-sp").value || null;
     if (id) payload.controlNo = $("#iq-control")?.value.trim() || d.controlNo || null;
     // Status is never set from this form — a new inquiry always starts
     // Open, and every later stage (For Sourced Out, Canvassed, Proceed
@@ -8558,7 +8580,8 @@ function openCostingForm(id, preset){
       accountId: $("#co-acct").value || null, dealId: $("#co-deal").value || null,
       leadId: $("#co-acct").value ? null : ($("#co-leadid")?.value || null),
       accountManagerId: state.data.accounts.get($("#co-acct").value)?.accountManagerId || null,
-      salesPerson: state.data.accounts.get($("#co-acct").value)?.salesPerson || null,
+      salesPerson: state.data.accounts.get($("#co-acct").value)?.salesPerson
+                   || state.data.inquiries.get(d.inquiryId)?.salesPerson || d.salesPerson || null,
       ownerId, department: dept,
       supplierId, supplierName, supplierContact: $("#co-contact").value.trim()||null,
       supplierEmail: $("#co-email").value.trim()||null, supplierRef: $("#co-ref").value.trim()||null,
@@ -9033,7 +9056,8 @@ function openQuoteForm(id, preset){
       subtotal:t.sub, total:t.total, terms:$("#q-terms").value||null,
       ownerId, department: state.users.get(ownerId)?.department || state.profile.department,
       accountManagerId: state.data.accounts.get($("#q-acct").value)?.accountManagerId || null,
-      salesPerson: state.data.accounts.get($("#q-acct").value)?.salesPerson || null,
+      salesPerson: state.data.accounts.get($("#q-acct").value)?.salesPerson
+                   || state.data.costing.get(q.costingId)?.salesPerson || q.salesPerson || null,
       controlNo: ($("#q-control")?.value.trim() || q.controlNo || null),
       costingId: q.costingId || null,
       updatedAt: serverTimestamp(), updatedBy: myUid()
