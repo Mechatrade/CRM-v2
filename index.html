@@ -1573,6 +1573,11 @@ function recordForUsers(d, uids, sp){
   for (const id of uids) if (spMatchesUser(sp, state.users.get(id))) return true;
   return false;
 }
+/* Inquiry, costing sheet or quotation: yours if you own it, or it was raised
+   for you as the Sales Person. */
+function recordIsMine(col, d, uid){
+  return d.ownerId === uid || spMatchesUser(spOfRecord(col, d), state.users.get(uid));
+}
 function quoteIsMine(q, uid){
   return q.ownerId === uid || spMatchesUser(spOfRecord("quotations", q), state.users.get(uid));
 }
@@ -3190,15 +3195,22 @@ function myQuotationSnapshot(scope){
   // their people as Sales Person), not just their own records.
   const teamDept = scope === "dept" ? state.profile.department : null;
   const team = teamDept ? deptUserSet(teamDept) : null;
-  const myInquiries = rows("inquiries").filter(d=> team ? recordForUsers(d, team, spOfRecord("inquiries", d)) : d.ownerId===uid);
-  const myCosting   = rows("costing").filter(d=> team ? recordForUsers(d, team, spOfRecord("costing", d)) : d.ownerId===uid);
+  const myInquiries = rows("inquiries").filter(d=> team ? recordForUsers(d, team, spOfRecord("inquiries", d)) : recordIsMine("inquiries", d, uid));
+  const myCosting   = rows("costing").filter(d=> team ? recordForUsers(d, team, spOfRecord("costing", d)) : recordIsMine("costing", d, uid));
   const ownQuotes   = rows("quotations").filter(d=>d.ownerId===uid);
   const myQuotes    = rows("quotations").filter(d=> team ? recordForUsers(d, team, spOfRecord("quotations", d)) : quoteIsMine(d, uid));
   const ms = monthStart();
 
   const newInquiries = myInquiries.filter(d=>d.status==="Open");
-  const quotedCostingIds = new Set(myQuotes.map(q=>q.costingId).filter(Boolean));
-  const forQuotation = myCosting.filter(c=>c.status==="Approved" && !quotedCostingIds.has(c.id));
+  // "Already quoted" is judged against EVERY quotation, not just yours: a
+  // Sales Operations Specialist may have raised it for you. A quotation links
+  // to its costing sheet by costingId, or — for older ones without it — by the
+  // shared Control No.
+  const allQuotes = rows("quotations");
+  const quotedCostingIds = new Set(allQuotes.map(q=>q.costingId).filter(Boolean));
+  const quotedControlNos = new Set(allQuotes.filter(q=>!q.costingId && q.controlNo).map(q=>q.controlNo));
+  const forQuotation = myCosting.filter(c=>c.status==="Approved" && !quotedCostingIds.has(c.id)
+                                          && !(c.controlNo && quotedControlNos.has(c.controlNo)));
   const pending = myQuotes.filter(q=>["Sent","Viewed"].includes(q.status));
   const pendingValue = pending.reduce((s,q)=>s+Number(q.total||0),0);
   const wonMonth = myQuotes.filter(q=>q.status==="Approved" && toDate(q.approvedAt) >= ms);
@@ -3639,7 +3651,7 @@ function viewList(col){
   const convertedLeads = col==="leads" ? rows("leads").filter(l=>l.status==="Converted") : [];
   if (col==="leads" && !f.showConverted) list = list.filter(l=>l.status!=="Converted");
   if (f.status) list = list.filter(d=> Array.isArray(f.status) ? f.status.includes(d.status||d.stage) : (d.status||d.stage)===f.status);
-  if (f.owner)  list = list.filter(d=>d.ownerId===f.owner || (col==="quotations" && quoteIsMine(d, f.owner)));
+  if (f.owner)  list = list.filter(d=>d.ownerId===f.owner || (["quotations","inquiries","costing"].includes(col) && recordIsMine(col, d, f.owner)));
   if (col==="activities" && f.due==="open") list = list.filter(d=>d.status!=="Completed");
   if (col==="deals" && f.oppType) list = list.filter(d=>(d.opportunityType||"Direct")===f.oppType);
   if (col==="deals" && f.sector)  list = list.filter(d=>(d.sector||"Private")===f.sector);
