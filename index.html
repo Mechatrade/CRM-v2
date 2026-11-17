@@ -1575,6 +1575,12 @@ function recordForUsers(d, uids, sp){
 }
 /* Inquiry, costing sheet or quotation: yours if you own it, or it was raised
    for you as the Sales Person. */
+/* Has this costing sheet already been turned into a quotation (by anyone)?
+   Linked by costingId, or — for older quotations without it — by Control No. */
+function costingIsQuoted(c){
+  return rows("quotations").some(q=> q.costingId ? q.costingId === c.id
+                                                 : (!!q.controlNo && q.controlNo === c.controlNo));
+}
 function recordIsMine(col, d, uid){
   return d.ownerId === uid || spMatchesUser(spOfRecord(col, d), state.users.get(uid));
 }
@@ -3203,14 +3209,8 @@ function myQuotationSnapshot(scope){
 
   const newInquiries = myInquiries.filter(d=>d.status==="Open");
   // "Already quoted" is judged against EVERY quotation, not just yours: a
-  // Sales Operations Specialist may have raised it for you. A quotation links
-  // to its costing sheet by costingId, or — for older ones without it — by the
-  // shared Control No.
-  const allQuotes = rows("quotations");
-  const quotedCostingIds = new Set(allQuotes.map(q=>q.costingId).filter(Boolean));
-  const quotedControlNos = new Set(allQuotes.filter(q=>!q.costingId && q.controlNo).map(q=>q.controlNo));
-  const forQuotation = myCosting.filter(c=>c.status==="Approved" && !quotedCostingIds.has(c.id)
-                                          && !(c.controlNo && quotedControlNos.has(c.controlNo)));
+  // Sales Operations Specialist may have raised it for you.
+  const forQuotation = myCosting.filter(c=>c.status==="Approved" && !costingIsQuoted(c));
   const pending = myQuotes.filter(q=>["Sent","Viewed"].includes(q.status));
   const pendingValue = pending.reduce((s,q)=>s+Number(q.total||0),0);
   const wonMonth = myQuotes.filter(q=>q.status==="Approved" && toDate(q.approvedAt) >= ms);
@@ -3218,8 +3218,8 @@ function myQuotationSnapshot(scope){
   const lostMonth = myQuotes.filter(q=>q.status==="Declined" && toDate(q.declinedAt) >= ms);
   const lostValue = lostMonth.reduce((s,q)=>s+Number(q.total||0),0);
 
-  const kpi = (label, val, foot, col, status) => `
-    <div class="kpi" data-kpi='${esc(JSON.stringify(teamDept ? {col, status, team:teamDept} : {col, status, owner:uid}))}' style="cursor:pointer">
+  const kpi = (label, val, foot, col, status, extra) => `
+    <div class="kpi" data-kpi='${esc(JSON.stringify({ ...(teamDept ? {col, status, team:teamDept} : {col, status, owner:uid}), ...(extra||{}) }))}' style="cursor:pointer">
       <div class="lbl">${esc(label)}</div>
       <div class="val mono">${val}</div>
       <div class="foot">${esc(foot)}</div>
@@ -3240,7 +3240,7 @@ function myQuotationSnapshot(scope){
   <div class="eyebrow" style="margin-bottom:8px">${teamDept ? esc(teamDept) + " department — " : "Your "}Sales &amp; Quotation Management</div>
   <div class="kpis">
     ${kpi("New Inquiries", newInquiries.length, "awaiting a first look", "inquiries", "Open")}
-    ${kpi("For Quotation", forQuotation.length, "costing approved, not yet quoted", "costing", "Approved")}
+    ${kpi("For Quotation", forQuotation.length, "costing approved, not yet quoted", "costing", "Approved", { unquoted:true })}
     ${kpi("Pending Quotations", pending.length, "sent, awaiting a decision", "quotations", ["Sent","Viewed"])}
     ${kpi("Quotation Value", shortMoney(pendingValue), "across pending quotations", "quotations", ["Sent","Viewed"])}
     ${kpi("Won This Month", shortMoney(wonValue), `${wonMonth.length} approved`, "quotations", "Approved")}
@@ -3656,6 +3656,7 @@ function viewList(col){
   if (col==="deals" && f.oppType) list = list.filter(d=>(d.opportunityType||"Direct")===f.oppType);
   if (col==="deals" && f.sector)  list = list.filter(d=>(d.sector||"Private")===f.sector);
   if (col==="accounts" && f.acctType) list = list.filter(d=>d.type===f.acctType);
+  if (col==="costing" && f.unquoted) list = list.filter(c=>c.status==="Approved" && !costingIsQuoted(c));
   if (f.team){ const ts = deptUserSet(f.team); list = list.filter(d=>recordForUsers(d, ts, spOfRecord(col, d))); }
   if (f.dept) list = list.filter(d=>state.users.get(d.ownerId)?.department === f.dept);
   if (f.role) list = list.filter(d=>state.users.get(d.ownerId)?.role === f.role);
@@ -3710,8 +3711,13 @@ function viewList(col){
     <span>Showing the <strong>${esc(f.team)}</strong> department's records only (including ones raised for its people as Sales Person).</span>
     <div class="spacer"></div><button class="btn sm" data-clear-team>Show all</button>
   </div>` : "";
+  const unquotedBanner = (col==="costing" && f.unquoted) ? `
+  <div class="card" style="padding:10px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px">
+    <span>Showing only <strong>approved sheets with no quotation yet</strong> — the ones counted as "For Quotation" on the dashboard.</span>
+    <div class="spacer"></div><button class="btn sm" data-clear-unquoted>Show all</button>
+  </div>` : "";
   const filterBar = `
-  ${lowGpBanner}${teamBanner}
+  ${lowGpBanner}${teamBanner}${unquotedBanner}
   <div class="toolbar">
     ${pageSearchPH ? `<span class="search" style="flex:none">
       <span class="mag">⌕</span>
@@ -5904,7 +5910,7 @@ function wireView(){
   // so the number on the card and what you land on always agree.
   v.querySelectorAll("[data-kpi]").forEach(el=> el.onclick = ()=>{
     const spec = JSON.parse(el.dataset.kpi);
-    state.filters[spec.col] = { ...(state.filters[spec.col]||{}), status: spec.status ?? undefined, owner: spec.owner ?? undefined, team: spec.team ?? undefined };
+    state.filters[spec.col] = { ...(state.filters[spec.col]||{}), status: spec.status ?? undefined, owner: spec.owner ?? undefined, team: spec.team ?? undefined, unquoted: spec.unquoted ?? undefined };
     setRoute(spec.col);
   });
   v.querySelectorAll("[data-convert]").forEach(el=> el.onclick = ()=> openConvert(el.dataset.convert));
@@ -6004,6 +6010,10 @@ function wireView(){
     // count as marking the task done.
     if (el.type === "checkbox") el.checked = false;
     openMarkDoneModal(id);
+  });
+  v.querySelectorAll("[data-clear-unquoted]").forEach(el=> el.onclick = ()=>{
+    const f = state.filters[state.route]; if (f) f.unquoted = undefined;
+    render();
   });
   v.querySelectorAll("[data-clear-team]").forEach(el=> el.onclick = ()=>{
     const f = state.filters[state.route]; if (f) f.team = undefined;
@@ -8327,6 +8337,10 @@ function openCostingForm(id, preset){
           <select id="co-deal"><option value="">— None —</option>
             ${dls.map(x=>`<option value="${x.id}"${x.id===d.dealId?" selected":""}>${esc(x.title)}</option>`).join("")}</select></div>
         <input type="hidden" id="co-leadid" value="${esc(d.leadId||"")}">
+        <div class="field"><label for="co-sp">Sales Person</label>
+          <select id="co-sp"><option value="">— choose a Sales Person —</option>
+            ${salesPersonNames().map(n=>spOpt(n, d.salesPerson || state.data.inquiries.get(d.inquiryId)?.salesPerson || "")).join("")}</select>
+          <span class="hint" id="co-sp-hint">Who this sheet is for. Once the customer has a Sales Person of their own, that one is used.</span></div>
         <div class="field"><label for="co-owner">Owner</label>
           <select id="co-owner"${isManager()?"":" disabled"}>
             ${isManager()?ownerOptions(d.ownerId||myUid()):`<option value="${myUid()}">${esc(state.profile.displayName||"You")}</option>`}</select></div>
@@ -8596,6 +8610,21 @@ function openCostingForm(id, preset){
     $("#"+fid).addEventListener("input", recalc);
     $("#"+fid).addEventListener("change", recalc);
   });
+  // Sales Person follows the customer once the customer has one of their
+  // own; otherwise it can be picked here.
+  function syncCostingSP(){
+    const acct = state.data.accounts.get($("#co-acct").value);
+    const sel = $("#co-sp"), hint = $("#co-sp-hint");
+    if (acct?.salesPerson){
+      sel.value = acct.salesPerson; sel.disabled = true;
+      hint.textContent = "Follows the customer — set it on the Customer record.";
+    } else {
+      sel.disabled = false;
+      hint.textContent = "Who this sheet is for. Once the customer has a Sales Person of their own, that one is used.";
+    }
+  }
+  $("#co-acct").addEventListener("change", syncCostingSP);
+  syncCostingSP();
   // Changing the supplier currency pre-fills the rate from Settings'
   // defaults — but only when the rate is still blank, so it never
   // overwrites a number someone actually typed in.
@@ -8641,7 +8670,7 @@ function openCostingForm(id, preset){
       leadId: $("#co-acct").value ? null : ($("#co-leadid")?.value || null),
       accountManagerId: state.data.accounts.get($("#co-acct").value)?.accountManagerId || null,
       salesPerson: state.data.accounts.get($("#co-acct").value)?.salesPerson
-                   || state.data.inquiries.get(d.inquiryId)?.salesPerson || d.salesPerson || null,
+                   || $("#co-sp").value || null,
       ownerId, department: dept,
       supplierId, supplierName, supplierContact: $("#co-contact").value.trim()||null,
       supplierEmail: $("#co-email").value.trim()||null, supplierRef: $("#co-ref").value.trim()||null,
