@@ -1547,6 +1547,19 @@ function quoteSalesPerson(q, acct){
       || (acct?.accountManagerId ? userName(acct.accountManagerId) : "")
       || q.salesPerson || "";
 }
+/* A quotation counts for a person when they own it OR it is raised for them as
+   the Sales Person — matched by the Sales Person's ID (their CRM login name),
+   or by name when no ID was set. This is how a quotation a Sales Operations
+   Specialist makes shows up on the targeted user's dashboard. */
+function quoteIsMine(q, uid){
+  if (q.ownerId === uid) return true;
+  const u = state.users.get(uid); if (!u) return false;
+  const sp = quoteSalesPerson(q, state.data.accounts.get(q.accountId));
+  if (!sp) return false;
+  const id = salesPersonId(sp).toLowerCase();
+  if (id) return !!u.loginName && id === String(u.loginName).toLowerCase();
+  return sp.trim().toLowerCase() === String(u.displayName||"").trim().toLowerCase();
+}
 function myLeads(){
   const all = rows("leads");
   if (isAdmin() || isManager()) return all;
@@ -3158,7 +3171,8 @@ function myQuotationSnapshot(){
   const uid = myUid();
   const myInquiries = rows("inquiries").filter(d=>d.ownerId===uid);
   const myCosting   = rows("costing").filter(d=>d.ownerId===uid);
-  const myQuotes    = rows("quotations").filter(d=>d.ownerId===uid);
+  const ownQuotes   = rows("quotations").filter(d=>d.ownerId===uid);
+  const myQuotes    = rows("quotations").filter(d=>quoteIsMine(d, uid));
   const ms = monthStart();
 
   const newInquiries = myInquiries.filter(d=>d.status==="Open");
@@ -3232,7 +3246,7 @@ function myQuotationSnapshot(){
     </div>
   </div>
   ${state.profile.role==="sales_operations_specialist"
-      ? salesPersonQuotesPanel(myQuotes, "Your quotations by Sales Person", "all departments · by Sales Person ID") : ""}
+      ? salesPersonQuotesPanel(ownQuotes, "Your quotations by Sales Person", "all departments · by Sales Person ID") : ""}
   <div style="margin:18px 0"></div>
   `;
 }
@@ -3601,7 +3615,7 @@ function viewList(col){
   const convertedLeads = col==="leads" ? rows("leads").filter(l=>l.status==="Converted") : [];
   if (col==="leads" && !f.showConverted) list = list.filter(l=>l.status!=="Converted");
   if (f.status) list = list.filter(d=> Array.isArray(f.status) ? f.status.includes(d.status||d.stage) : (d.status||d.stage)===f.status);
-  if (f.owner)  list = list.filter(d=>d.ownerId===f.owner);
+  if (f.owner)  list = list.filter(d=>d.ownerId===f.owner || (col==="quotations" && quoteIsMine(d, f.owner)));
   if (col==="activities" && f.due==="open") list = list.filter(d=>d.status!=="Completed");
   if (col==="deals" && f.oppType) list = list.filter(d=>(d.opportunityType||"Direct")===f.oppType);
   if (col==="deals" && f.sector)  list = list.filter(d=>(d.sector||"Private")===f.sector);
