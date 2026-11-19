@@ -3579,8 +3579,11 @@ function viewCallSheet(){
 }
 function wireCallSheet(){
   const root = $("#callsheet"); if (!root) return;
-  $("#cs-fstatus").onchange = e=>{ callFilter.status = e.target.value; callPending=false; render(); };
-  $("#cs-fcaller").onchange = e=>{ callFilter.caller = e.target.value; callPending=false; render(); };
+  // The dropdown still has focus when it changes, which made the sheet think
+  // someone was mid-edit and hold the redraw until they clicked elsewhere.
+  // Let go of focus first so the filter applies at once.
+  $("#cs-fstatus").onchange = e=>{ callFilter.status = e.target.value; callPending=false; e.target.blur(); render(); };
+  $("#cs-fcaller").onchange = e=>{ callFilter.caller = e.target.value; callPending=false; e.target.blur(); render(); };
   root.addEventListener("focusout", ()=> setTimeout(()=>{
     if (callPending && !callSheetBusy()){ callPending = false; render(); }
   }, 0));
