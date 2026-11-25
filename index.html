@@ -1333,8 +1333,8 @@ const SCHEMAS = {
   inquiries: {
     label:"Inquiry", plural:"Customer / lead inquiries", icon:"◐", titleField:"subject",
     fields:[
-      { k:"subject",        l:"Subject",         type:"text",   req:true, table:true },
       { k:"controlNo",      l:"Control No.", type:"text", table:true, system:true },
+      { k:"subject",        l:"Subject",         type:"text",   req:true, table:true },
       { k:"relatedType",    l:"Inquiry from",     type:"select", opts:["Lead","Account"], def:"Lead", table:true },
       { k:"relatedId",      l:"Lead / Customer",  type:"ref",    refTo:"dynamic", table:true },
       { k:"contactId",      l:"Contact person",   type:"ref",    refTo:"contacts" },
@@ -3850,7 +3850,7 @@ function viewList(col){
     <tbody>
       ${list.map(d=>`<tr>
         ${cols.map((c,i)=>`<td class="${["money","number"].includes(c.type)?"num":""}">${
-          i===0 ? `<span class="lnk" data-open="${col}:${d.id}">${esc(titleOf(col,d))}</span>`
+          i===0 ? `<span class="lnk" data-open="${col}:${d.id}">${esc(c.k===S.titleField ? titleOf(col,d) : (d[c.k] || "—"))}</span>`
           : (["status","stage"].includes(c.k) && c.opts && (canWrite(d, col) || (col==="costing" && costingApprover(d)))) ? statusSelect(col, d, c.opts)
           : (col==="accounts" && ["type","priority"].includes(c.k) && c.opts && canWrite(d, col)) ? inlineFieldSelect(col, d, c)
           : (col==="salesorders" && c.k==="quotationId" && d.quotationId) ? `<span class="lnk" data-qprev="${d.quotationId}" title="Preview the final quotation">${esc(recordTitle("quotations",d.quotationId))}</span>`
