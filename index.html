@@ -2693,8 +2693,12 @@ $("#burger").onclick = ()=>
 $("#rail-scrim").onclick = closeMenu;
 document.addEventListener("keydown", e=>{ if (e.key === "Escape") closeMenu(); });
 
-function setRoute(r){
+function setRoute(r, keepFilters){
   if (state.profile && !allowedRoutes().has(r)) r = "dashboard";
+  // Filters that have no control of their own on the list (they come from
+  // clicking a dashboard card) must not silently follow you to the menu later.
+  if (!keepFilters && state.filters[r])
+    ["owner","team","since","unquoted"].forEach(k=>{ delete state.filters[r][k]; });
   state.route = r; state.search = ""; $("#q").value = "";
   location.hash = r;
   renderNav(); render();
@@ -3766,8 +3770,13 @@ function viewList(col){
     <span>Showing records from <strong>${esc(new Date(f.since).toLocaleDateString("en-PH",{ day:"numeric", month:"short", year:"numeric" }))}</strong> onward — the period chosen on the dashboard.</span>
     <div class="spacer"></div><button class="btn sm" data-clear-since>Show all dates</button>
   </div>` : "";
+  const ownerBanner = (f.owner && !(isManager()||col==="leads")) ? `
+  <div class="card" style="padding:10px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px">
+    <span>Showing only records <strong>${esc(userName(f.owner))}</strong> owns or that are raised for them as Sales Person.</span>
+    <div class="spacer"></div><button class="btn sm" data-clear-owner>Show all</button>
+  </div>` : "";
   const filterBar = `
-  ${lowGpBanner}${teamBanner}${unquotedBanner}${sinceBanner}
+  ${lowGpBanner}${teamBanner}${unquotedBanner}${sinceBanner}${ownerBanner}
   <div class="toolbar">
     ${pageSearchPH ? `<span class="search" style="flex:none">
       <span class="mag">⌕</span>
@@ -3825,7 +3834,8 @@ function viewList(col){
 
   if(!list.length) return filterBar + `<div class="card"><div class="empty">
     <strong>No ${esc(S.plural.toLowerCase())} yet</strong>
-    ${state.search||f.status||f.owner ? "Nothing matches this filter."
+    ${state.search||f.status||f.owner||f.team||f.since||f.unquoted||f.dept||f.role ? "Nothing matches the filters in effect."
+      + (rows(col).length ? ` <div style="margin-top:10px"><button class="btn sm" data-clear-all>Clear all filters</button></div>` : "")
       : `Add your first ${esc(S.label.toLowerCase())} with the New button, or Import a whole list at once.`}
   </div></div>`;
 
@@ -5961,7 +5971,7 @@ function wireView(){
   v.querySelectorAll("[data-kpi]").forEach(el=> el.onclick = ()=>{
     const spec = JSON.parse(el.dataset.kpi);
     state.filters[spec.col] = { ...(state.filters[spec.col]||{}), status: spec.status ?? undefined, owner: spec.owner ?? undefined, team: spec.team ?? undefined, unquoted: spec.unquoted ?? undefined, since: spec.since ?? undefined };
-    setRoute(spec.col);
+    setRoute(spec.col, true);
   });
   v.querySelectorAll("[data-convert]").forEach(el=> el.onclick = ()=> openConvert(el.dataset.convert));
   v.querySelectorAll("[data-convert-so]").forEach(el=> el.onclick = ()=> startSalesOrderConversion(el.dataset.convertSo));
@@ -6063,6 +6073,14 @@ function wireView(){
   });
   v.querySelectorAll("[data-clear-unquoted]").forEach(el=> el.onclick = ()=>{
     const f = state.filters[state.route]; if (f) f.unquoted = undefined;
+    render();
+  });
+  v.querySelectorAll("[data-clear-owner]").forEach(el=> el.onclick = ()=>{
+    const f = state.filters[state.route]; if (f) f.owner = undefined;
+    render();
+  });
+  v.querySelectorAll("[data-clear-all]").forEach(el=> el.onclick = ()=>{
+    state.filters[state.route] = {}; state.search = ""; const q=$("#q"); if (q) q.value = "";
     render();
   });
   v.querySelectorAll("[data-clear-since]").forEach(el=> el.onclick = ()=>{
