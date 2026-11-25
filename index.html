@@ -3770,7 +3770,10 @@ function viewList(col){
     <span>Showing records from <strong>${esc(new Date(f.since).toLocaleDateString("en-PH",{ day:"numeric", month:"short", year:"numeric" }))}</strong> onward — the period chosen on the dashboard.</span>
     <div class="spacer"></div><button class="btn sm" data-clear-since>Show all dates</button>
   </div>` : "";
-  const ownerBanner = (f.owner && !(isManager()||col==="leads")) ? `
+  // Managers, and Sales Operations Specialists (who work across every
+  // department), get the Everyone / department / role filters.
+  const wideFilters = isManager() || state.profile?.role === "sales_operations_specialist";
+  const ownerBanner = (f.owner && !(wideFilters||col==="leads")) ? `
   <div class="card" style="padding:10px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px">
     <span>Showing only records <strong>${esc(userName(f.owner))}</strong> owns or that are raised for them as Sales Person.</span>
     <div class="spacer"></div><button class="btn sm" data-clear-owner>Show all</button>
@@ -3786,11 +3789,11 @@ function viewList(col){
       <option value="">All ${esc(statusField.l.toLowerCase())}es</option>
       ${statusField.opts.map(o=>opt(o,f.status)).join("")}
     </select>`:""}
-    ${isManager()||col==="leads"?`<select data-filter="owner">
+    ${wideFilters||col==="leads"?`<select data-filter="owner">
       <option value="">Everyone</option>
       ${ownerOptions(f.owner)}
     </select>
-    ${isManager()?`<select data-filter="dept" title="Filter by the owner's department">
+    ${wideFilters?`<select data-filter="dept" title="Filter by the owner's department">
       <option value="">All departments</option>
       ${DEPTS.map(d=>opt(d,f.dept)).join("")}
     </select>
